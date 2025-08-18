@@ -404,6 +404,12 @@ class ActionForm(QDialog):
         preset_group.setLayout(preset_layout)
         main_layout.addWidget(preset_group)
 
+        # Tickbox to not notify in-game
+
+        self.notify_in_game = QCheckBox("Notify in-game")
+        self.notify_in_game.setChecked(True)
+        main_layout.addWidget(self.notify_in_game)
+
         # Action buttons
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.perform_action)
@@ -532,6 +538,8 @@ class ActionForm(QDialog):
                 try:
                     self.game.banbyid(player_id, time_hour, reason)
                     action_executed = True
+                    if self.notify_in_game.isChecked():
+                        self.game.AdminSay(f"{player_name} has been banned from the server.")
                 except Exception as e:
                     QMessageBox.warning(self, "Game Connection Error", f"Could not execute ban command:\n{str(e)}")
 
@@ -550,6 +558,8 @@ class ActionForm(QDialog):
                 try:
                     self.game.kickbyid(player_id, reason)
                     action_executed = True
+                    if self.notify_in_game.isChecked():
+                        self.game.AdminSay(f"{player_name} has been kicked from the server.")
                 except Exception as e:
                     QMessageBox.warning(self, "Game Connection Error", f"Could not execute kick command:\n{str(e)}")
 
@@ -1886,7 +1896,6 @@ class FirstToScoreboardWindow(QDialog):
             QMessageBox.warning(self, "Not Connected", "Cannot send message. Chivalry 2 is not connected.")
             return
         try:
-            # API already performs serversay; do not include the word "serversay" in msg
             self.game.ServerSay(msg)
         except Exception as e:
             QMessageBox.warning(self, "Game Error", f"Failed to broadcast message to game:\n{str(e)}")
