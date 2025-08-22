@@ -312,7 +312,6 @@ class ActionForm(QDialog):
         self.resize(450, 350)
         self.setModal(True)
         self.setWindowModality(Qt.WindowModal)
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
 
         # Try to connect to game
         self.game = None
@@ -598,7 +597,6 @@ class PlayerActionDialog(QDialog):
         self.resize(380, 150)
         self.setModal(True)
         self.setWindowModality(Qt.WindowModal)
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.player_id = player_id
         self.player_name = player_name
         layout = QVBoxLayout()
@@ -664,7 +662,6 @@ class PlayersWindow(QDialog):
         self.resize(600, 800)
         self.setModal(True)
         self.setWindowModality(Qt.ApplicationModal)
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
 
         # Try to connect to game
         self.game = None
@@ -846,7 +843,6 @@ class ActionDialog(QDialog):
         self.inputs = {}
         self.setModal(True)
         self.setWindowModality(Qt.WindowModal)
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
 
         layout = QFormLayout()
         for field in fields:
@@ -871,7 +867,6 @@ class ConsoleKeyDialog(QDialog):
         self.setWindowTitle("Configure Console Key")
         self.setModal(True)
         self.setWindowModality(Qt.WindowModal)
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.resize(420, 180)
 
         self.captured_vk = None
@@ -1711,7 +1706,6 @@ class FirstToScoreboardWindow(QDialog):
         super().__init__(parent)
         self.setModal(True)
         self.setWindowModality(Qt.ApplicationModal)
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.setWindowTitle("Match Arbitration (First To)")
         self.resize(1100, 700)
         self.setSizeGripEnabled(True)

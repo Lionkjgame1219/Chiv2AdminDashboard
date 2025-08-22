@@ -16,11 +16,11 @@ class GameChivalry():
 
     def banbyid(self, id, time, reason):
         self.game.openConsole()
-        self.game.consoleSend(f'banbyid {id} {time} {reason}. {time} hours ban.')
+        self.game.consoleSend(f'banbyid {id} {time} "{reason}. {time} hours ban."')
 
     def kickbyid(self, id, reason):
         self.game.openConsole()
-        self.game.consoleSend(f'kickbyid {id} {reason}')
+        self.game.consoleSend(f'kickbyid {id} "{reason}"')
 
     def AddTime(self, time):
         self.game.openConsole()

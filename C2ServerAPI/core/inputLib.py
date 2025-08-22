@@ -7,7 +7,7 @@ import win32api, win32con
 # Timing constants - tuned for speed while maintaining reliability
 # Note: These values were conservative before; testing shows the game accepts much faster sequences.
 KEY_PRESS_DURATION = 0.01      # Time between key down and key up
-KEY_SEQUENCE_DELAY = 0.005     # Delay between individual key presses
+KEY_SEQUENCE_DELAY = 0.01     # Delay between individual key presses
 COMMAND_COMPLETION_DELAY = 0.0 # Delay after typing complete command
 
 def sendKeyPress(vk_code):
