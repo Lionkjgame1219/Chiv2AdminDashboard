@@ -221,6 +221,20 @@ class ChivalryWaitingDialog(QDialog):
         # Update theme button text based on current theme
         self.update_theme_button()
 
+    def closeEvent(self, event):
+        """Handle window close button - exit the application"""
+        self.timer.stop()
+        event.accept()
+        # Exit the application when the close button is clicked
+        QApplication.quit()
+
+    def reject(self):
+        """Handle dialog rejection (Esc key or close button) - exit the application"""
+        self.timer.stop()
+        super().reject()
+        # Exit the application when dialog is rejected
+        QApplication.quit()
+
     def toggle_theme(self):
         """Toggle between dark and light theme"""
         app = QApplication.instance()
@@ -861,6 +875,125 @@ class ActionDialog(QDialog):
     def get_inputs(self):
         return [line_edit.text().strip() for line_edit in self.inputs.values()]
 
+class AddTimeDialog(QDialog):
+    """Custom dialog for adding time with improved layout"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add Time")
+        self.setModal(True)
+        self.setWindowModality(Qt.WindowModal)
+        self.setMinimumWidth(400)
+
+        # Main layout
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+
+        # Title label
+        title_label = QLabel("Add time to the current map")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet("font-size: 14pt; font-weight: bold; margin-bottom: 10px;")
+        main_layout.addWidget(title_label)
+
+        # Description label
+        desc_label = QLabel("Number of minutes to add:")
+        desc_label.setAlignment(Qt.AlignCenter)
+        desc_label.setStyleSheet("font-size: 10pt; margin-bottom: 5px;")
+        main_layout.addWidget(desc_label)
+
+        # Input field
+        self.time_input = QLineEdit()
+        self.time_input.setPlaceholderText("e.g., 5")
+        self.time_input.setAlignment(Qt.AlignCenter)
+        self.time_input.setStyleSheet("font-size: 11pt; padding: 8px;")
+        main_layout.addWidget(self.time_input)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
+
+        self.ok_button = QPushButton("Add Time")
+        self.ok_button.setStyleSheet("font-size: 10pt; padding: 8px;")
+        self.ok_button.clicked.connect(self.accept)
+
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setStyleSheet("font-size: 10pt; padding: 8px;")
+        self.cancel_button.clicked.connect(self.reject)
+
+        button_layout.addWidget(self.ok_button)
+        button_layout.addWidget(self.cancel_button)
+
+        main_layout.addLayout(button_layout)
+        self.setLayout(main_layout)
+
+    def get_time(self):
+        """Return the entered time value"""
+        return self.time_input.text().strip()
+
+    def set_time(self, time_value):
+        """Set the time input field value"""
+        self.time_input.setText(time_value)
+
+class UnbanPlayerDialog(QDialog):
+    """Custom dialog for unbanning a player with improved layout"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Unban Player")
+        self.setModal(True)
+        self.setWindowModality(Qt.WindowModal)
+        self.setMinimumWidth(450)
+
+        # Main layout
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+
+        # Title label
+        title_label = QLabel("Unban Player")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet("font-size: 14pt; font-weight: bold; margin-bottom: 10px;")
+        main_layout.addWidget(title_label)
+
+        # Description label
+        desc_label = QLabel("Enter the player's PlayFabID:")
+        desc_label.setAlignment(Qt.AlignCenter)
+        desc_label.setStyleSheet("font-size: 10pt; margin-bottom: 5px;")
+        main_layout.addWidget(desc_label)
+
+        # Input field
+        self.playfabid_input = QLineEdit()
+        self.playfabid_input.setPlaceholderText("e.g., 1234567890ABCDEF")
+        self.playfabid_input.setAlignment(Qt.AlignCenter)
+        self.playfabid_input.setStyleSheet("font-size: 11pt; padding: 8px; font-family: monospace;")
+        self.playfabid_input.setMaxLength(16)
+        main_layout.addWidget(self.playfabid_input)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
+
+        self.ok_button = QPushButton("Unban Player")
+        self.ok_button.setStyleSheet("font-size: 10pt; padding: 8px;")
+        self.ok_button.clicked.connect(self.accept)
+
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setStyleSheet("font-size: 10pt; padding: 8px;")
+        self.cancel_button.clicked.connect(self.reject)
+
+        button_layout.addWidget(self.ok_button)
+        button_layout.addWidget(self.cancel_button)
+
+        main_layout.addLayout(button_layout)
+        self.setLayout(main_layout)
+
+    def get_playfabid(self):
+        """Return the entered PlayFabID value"""
+        return self.playfabid_input.text().strip()
+
+    def set_playfabid(self, playfabid):
+        """Set the PlayFabID input field value"""
+        self.playfabid_input.setText(playfabid)
+
 class ConsoleKeyDialog(QDialog):
     def __init__(self, current_vk: str = "", parent=None):
         super().__init__(parent)
@@ -1087,6 +1220,10 @@ class AdminDashboard(QWidget):
         btn_add_time = QPushButton("Add Time")
         btn_add_time.clicked.connect(self.open_add_time_dialog)
         actions_row.addWidget(btn_add_time)
+
+        btn_unban = QPushButton("Unban Player")
+        btn_unban.clicked.connect(self.open_unban_dialog)
+        actions_row.addWidget(btn_unban)
 
         commands_layout.addLayout(actions_row)
 
@@ -1391,11 +1528,11 @@ class AdminDashboard(QWidget):
             self.players_window.exec_()
 
     def open_add_time_dialog(self):
-        dialog = ActionDialog("Add Time", ["Time to add (minutes)"], parent=self)
+        dialog = AddTimeDialog(parent=self)
         # Pre-fill last add time value
-        dialog.inputs["Time to add (minutes)"] .setText(get_persisted_value('last_add_time', ""))
+        dialog.set_time(get_persisted_value('last_add_time', ""))
         if dialog.exec_() == QDialog.Accepted:
-            added_time = dialog.get_inputs()[0]
+            added_time = dialog.get_time()
             print(f" +{added_time}min")
 
             # Try to add time to game if connected
@@ -1414,6 +1551,71 @@ class AdminDashboard(QWidget):
                 # Persist last add time
                 set_persisted_value('last_add_time', str(added_time))
                 #wehbooks.MessageForAdmin("N/A", "N/A", f"Added {added_time} minutes", added_time, "time")
+
+    def open_unban_dialog(self):
+        """Open dialog to unban a player by PlayFabID"""
+        dialog = UnbanPlayerDialog(parent=self)
+
+        if dialog.exec_() == QDialog.Accepted:
+            player_id = dialog.get_playfabid()
+
+            # Validate PlayFabID: must be exactly 16 characters, uppercase letters and numbers only
+            if not player_id or len(player_id) != 16 or not player_id.isupper() or not player_id.isalnum():
+                QMessageBox.warning(
+                    self,
+                    "Invalid PlayFabID",
+                    "PlayFabID must be exactly 16 characters long and contain only uppercase letters and numbers."
+                )
+                return
+
+            print(f"[UNBAN] Player ID={player_id}")
+
+            # Try to execute the unban command if game is connected
+            if self.chivalry_connected and hasattr(self.game, 'unbanbyid'):
+                try:
+                    self.game.unbanbyid(player_id)
+
+                    # Send ServerSay message to confirm unban
+                    if hasattr(self.game, 'ServerSay'):
+                        try:
+                            self.game.ServerSay(f"{player_id} unban successful.")
+                        except Exception as e:
+                            print(f"[UNBAN] Could not send ServerSay message: {e}")
+
+                    # Ask user to confirm if the unban was successful by checking the ServerSay message
+                    def ask_confirmation():
+                        confirm = QMessageBox.question(
+                            self,
+                            "Unban Confirmation",
+                            f"Did the ServerSay message appear in the game confirming the unban?\n\n"
+                            f"Message: '{player_id} unban successful.'",
+                            QMessageBox.Yes | QMessageBox.No,
+                            QMessageBox.Yes
+                        )
+
+                        if confirm == QMessageBox.Yes:
+                            # Send Discord webhook notification only if user confirms success
+                            wehbooks.MessageForAdmin(player_id, "N/A", None, None, "unban")
+                            QMessageBox.information(
+                                self,
+                                "Player Unbanned",
+                                f"Successfully unbanned player with ID: {player_id}\n\nDiscord notification sent."
+                            )
+                        else:
+                            QMessageBox.warning(
+                                self,
+                                "Unban Not Confirmed",
+                                f"Unban was not confirmed. Discord notification was not sent.\n\n"
+                                f"Please verify the unban status manually."
+                            )
+
+                    # Delay the confirmation dialog to give time for the ServerSay message to appear
+                    QTimer.singleShot(2000, ask_confirmation)
+
+                except Exception as e:
+                    QMessageBox.warning(self, "Game Connection Error", f"Could not execute unban command:\n{str(e)}")
+            else:
+                QMessageBox.warning(self, "Not Connected", "Cannot unban player - Chivalry 2 is not connected.\n\nPlease ensure Chivalry 2 is running.")
 
     def open_first_to_window(self):
         if self.first_to_window is not None and self.first_to_window.isVisible():
@@ -1936,7 +2138,8 @@ class FirstToScoreboardWindow(QDialog):
             self._send_server_message(win_msg)
 
         # Send Discord notification
-        wehbooks.MessageForAdmin("N/A", "N/A", discord_result, None, "ft")
+        if self.ft_discord_notification.isChecked():
+            wehbooks.MessageForAdmin("N/A", "N/A", discord_result, None, "ft")
 
         # Disable adding further points until reset
         self.add_p1_btn.setEnabled(False)
