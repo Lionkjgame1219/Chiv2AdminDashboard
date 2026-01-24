@@ -222,18 +222,15 @@ class ChivalryWaitingDialog(QDialog):
         self.update_theme_button()
 
     def closeEvent(self, event):
-        """Handle window close button - exit the application"""
+        """Handle window close button - reject the dialog to exit the application"""
         self.timer.stop()
-        event.accept()
-        # Exit the application when the close button is clicked
-        QApplication.quit()
+        event.ignore()  # Ignore the close event
+        self.reject()   # Call reject to properly close the dialog
 
     def reject(self):
         """Handle dialog rejection (Esc key or close button) - exit the application"""
         self.timer.stop()
         super().reject()
-        # Exit the application when dialog is rejected
-        QApplication.quit()
 
     def toggle_theme(self):
         """Toggle between dark and light theme"""
@@ -985,14 +982,6 @@ class UnbanPlayerDialog(QDialog):
 
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
-
-    def get_playfabid(self):
-        """Return the entered PlayFabID value"""
-        return self.playfabid_input.text().strip()
-
-    def set_playfabid(self, playfabid):
-        """Set the PlayFabID input field value"""
-        self.playfabid_input.setText(playfabid)
 
 class ConsoleKeyDialog(QDialog):
     def __init__(self, current_vk: str = "", parent=None):
@@ -2681,7 +2670,10 @@ def main():
     # Check if we should wait for Chivalry 2
     if "--no-wait" not in sys.argv and not check_chivalry_window():
         waiting_dialog = ChivalryWaitingDialog()
-        waiting_dialog.exec_()
+        result = waiting_dialog.exec_()
+        # If dialog was rejected (closed with X or Esc), exit the application
+        if result == QDialog.Rejected:
+            sys.exit(0)
 
     # Initialize Discord webhooks at startup
     import core.wehbooks as wehbooks
