@@ -16,7 +16,15 @@ class GameChivalry():
 
     def banbyid(self, id, time, reason):
         self.game.openConsole()
-        self.game.consoleSend(f'banbyid {id} {time} "{reason}. {time} hours ban."')
+        hours_text = f"{time} hour{'s' if time != 1 else ''}"
+
+        if time > 24:
+            days = time // 24
+            days_text = f" ( {'Nearly ' if time % 24 else ''}{days} day{'s' if days != 1 else ''})"
+        else:
+            days_text = ""
+
+        self.game.consoleSend(f'banbyid {id} {time} "{reason}. Ban duration: {hours_text}{days_text}."')
 
     def unbanbyid(self, id):
         self.game.openConsole()

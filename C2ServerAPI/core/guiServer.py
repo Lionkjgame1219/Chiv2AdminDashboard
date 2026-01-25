@@ -34,30 +34,21 @@ class Chivalry:
             return hwnd
 
     def getFocus(self, hwnd):
-        """Give the chivalry 2 window user focus. This visually brings the window in front of all other windows and
-            directs user input to it. This is a precondition to many interactions with the chivalry 2 process, especially
-            ocr-related operations. Most functions that internally require this will call it themselves unless stated
-            otherwise.
-        """
+        """Give the chivalry 2 window user focus."""
         remote_thread, _ = win32process.GetWindowThreadProcessId(hwnd)
         win32process.AttachThreadInput(win32api.GetCurrentThreadId(), remote_thread, True)
-        prev_handle = win32gui.SetFocus(hwnd)
-        # Also bring window to foreground to ensure it receives input
+        win32gui.SetFocus(hwnd)
         win32gui.SetForegroundWindow(hwnd)
 
     def checkInGameConsoleOpen(self):
-        """Returns true or false, indicating if the in-game console is currently open in extended mode.
-
-        """
-        screenshot = self.getChivScreenshot() #get a screenshot of the chiv game
+        """Returns true or false, indicating if the in-game console is currently open in extended mode."""
+        screenshot = self.getChivScreenshot()
         width, height = screenshot.size
         screenshot = screenshot.crop((0, height*(47/64)+2, width*0.02, height*(49/64)-2))
-        #process to isolate console text, and convert back to RGB
         try:
             screenshot = screenshot.quantize(colors=256).convert(mode="1").convert(mode="RGB")
         except Exception:
             pass
-        # OCR only if pytesseract is available
         try:
             import pytesseract
             print(pytesseract.image_to_string(screenshot))
@@ -65,15 +56,14 @@ class Chivalry:
             print("[OCR] pytesseract not available; skipping OCR in checkInGameConsoleOpen")
         
     def getChivScreenshot(self, tabDown=False):
-        """Returns a PIL image of the entire chivalry 2 window, as it appears on-screen to a human user.
-        """
+        """Returns a PIL image of the entire chivalry 2 window."""
         hwnd = self.getChivalryWindowHandle()
         self.getFocus(hwnd)
         sleep(0.1)
         if tabDown:
             inputLib.tabDown()
             sleep(0.1)
-        
+
         windowRect = win32gui.GetWindowRect(hwnd)
         try:
             from PIL import ImageGrab
@@ -86,49 +76,30 @@ class Chivalry:
 
         return image
 
-    #precondition: the extended view of the console is open in chivalry
     def getConsoleOutput(self):
         """Returns the currently displayed output of the chivalry console window as a string using OCR.
 
-        PRECONDITIONS:
-            The chivalry console must be opened and visible in extended mode in the chivalry 2 process. See
-                the checkInGameConsoleOpen(), openConsole() and closeConsole() functions.
+        PRECONDITION: The chivalry console must be opened and visible in extended mode.
         """
-        screenshot = self.getChivScreenshot() #get a screenshot of the chiv game
-        #get screenshot dimensions
+        screenshot = self.getChivScreenshot()
         width, height = screenshot.size
-        #crop to console only. 
-        #height*(47/64)-2 is a magic number measured empirically.
-        #It gets everything up to the horizontal line separating the command line input
         screenshot = screenshot.crop((0, 0, width, height*(47/64)-2))
-        #process to isolate console text, and convert back to RGB
         screenshot = screenshot.quantize(colors=256).convert(mode="1").convert(mode="RGB")
         try:
             import pytesseract
             text = pytesseract.image_to_string(screenshot)
         except Exception as e:
             raise RuntimeError("pytesseract is required for OCR operations but is not installed.") from e
-        #strip empty lines and return them
         return [s for s in text.splitlines() if s]
 
     def getTimeRemaining(self):
-        """Return the time remaining in the game as a string, as displayed in the in-game timer.
-
-        This function internally uses OCR, and does not do cleanup on the string returned. It is the
-            responsibility of the caller to ensure that this string is valid, clean, and interpretable
-            before using it.
-
+        """Return the time remaining in the game as a string using OCR.
 
         NOTE: The in-game console should not be open in extended mode when this function is called.
-            It may still work, however, it will be less reliable.
         """
         screenshot = self.getChivScreenshot()
         width, height = screenshot.size
-        #crop to location of timer on screen
         screenshot = screenshot.crop((0.45*width, 0.08*height, 0.55*width, 0.13*height))
-        
-        #process and isolate text
-
         screenshot = screenshot.quantize(colors=128).convert(mode="RGB")
         try:
             import pytesseract
@@ -141,33 +112,25 @@ class Chivalry:
     def getPlayerList(self):
         screenshot = self.getChivScreenshot(tabDown=True)
         width, height = screenshot.size
-        
-        # Hypothèse : la liste des joueurs est affichée en haut à droite
-        # Ajuste ces valeurs en fonction de ta capture d'écran
+
         left = int(width * 0.75)
         top = int(height * 0.15)
         right = int(width * 0.95)
         bottom = int(height * 0.70)
-        
-        player_list_img = screenshot.crop((left, top, right, bottom))
-        
-        # Pré-traitement : augmenter contraste, binariser, etc.
-        player_list_img = player_list_img.convert("L")  # niveaux de gris
-        player_list_img = player_list_img.point(lambda x: 0 if x < 128 else 255, '1')  # binarisation
-        
-        # player_list_img.show()  # pour debug
 
-        # OCR
+        player_list_img = screenshot.crop((left, top, right, bottom))
+        player_list_img = player_list_img.convert("L")
+        player_list_img = player_list_img.point(lambda x: 0 if x < 128 else 255, '1')
+
         try:
             import pytesseract
             text = pytesseract.image_to_string(player_list_img)
         except Exception as e:
             raise RuntimeError("pytesseract is required for OCR operations but is not installed.") from e
-        
-        # Nettoyage du texte et découpage en lignes
+
         lines = text.splitlines()
         players = [line.strip() for line in lines if line.strip() != ""]
-        
+
         return players
 
     def isGameEnd(self):
@@ -217,30 +180,22 @@ class Chivalry:
     def getRecentCommandOutput(self, command, lines):
         """Returns the output of a command that was recently run.
 
-        PRECONDITION: the extended view of the console is open in chivalry
+        PRECONDITION: The extended view of the console is open in chivalry
 
-        @param command: A string containing the command that was run, exactly as it was entered
-        @param lines: How many lines of it's output to return. (this depends on the specific command)
+        @param command: A string containing the command that was run
+        @param lines: How many lines of output to return
         @returns The output of the run command as a string, or None
         """
         console = self.getConsoleOutput()
-        #get a view of the console containing only command run lines and no spaces what-so-ever
-        #command run lines take the form `>>> command <<<` in the output. We strip spaces because
-        #we can't rely on them being detected by OCR. We also cant rely on ALL of the >>> / <<< characters to
-        #be correctly OCR'd. Here, we rely on at least two consecutive of both
-        #StrippedConsole elements include their index in the actual console output array
         strippedConsole = [
-            (index, s.replace(" ", "")) 
-            for index,s in enumerate(console) 
+            (index, s.replace(" ", ""))
+            for index,s in enumerate(console)
             if ">>" in s and "<<" in s
         ]
-        for i, s in reversed(strippedConsole): #searching backwards through all commands run
-            if command.replace(" ", "") in s: #if this line is the running of the requested command
-                if i < len(console)-1: #if this is not the last line of the console output
+        for i, s in reversed(strippedConsole):
+            if command.replace(" ", "") in s:
+                if i < len(console)-1:
                     n = lines+1
-                    #return some number of lines, n, output after the command run, or the rest of the
-                    #output of the console if there are less than n lines left
-                    #this is more general than it needs to be, but this is intended to
                     return console[i+1:i+n] if i+n < len(console) else console[i+1:]
                 else:
                     return None
@@ -255,17 +210,15 @@ class Chivalry:
         print(f"[CONSOLESEND] Game window handle: {hwnd}")
         self.getFocus(hwnd)
 
-        # Wait only until the window is foreground (up to ~200ms), no fixed delay
         try:
             import win32gui
-            for _ in range(40):  # 40 * 5ms = 200ms max
+            for _ in range(40):
                 if win32gui.GetForegroundWindow() == hwnd:
                     break
                 sleep(0.005)
         except Exception:
-            pass  # If check fails, continue anyway
+            pass
 
-        # Ensure input line is clean to avoid command concatenation
         try:
             inputLib.clearInputLine()
         except Exception:
@@ -289,10 +242,9 @@ class Chivalry:
         print(f"[OPENCONSOLE] Game window handle: {hwnd}")
         self.getFocus(hwnd)
 
-        # Wait only until the window is foreground (up to ~200ms), no fixed delay
         try:
             import win32gui
-            for _ in range(40):  # 40 * 5ms = 200ms max
+            for _ in range(40):
                 if win32gui.GetForegroundWindow() == hwnd:
                     break
                 sleep(0.005)
@@ -304,27 +256,21 @@ class Chivalry:
 
         if success:
             print("[OPENCONSOLE] Console opened successfully")
-            # Minimal settling time to ensure input line is ready
             sleep(0.08)
         else:
             print("[OPENCONSOLE] ERROR: Console opening failed")
 
-    # closeConsole() removed - console auto-closes after Enter
-
 
     def SavePreset(self, slot, payload):
-        """Save a preset to a slot. Payload may be:
-        - reason only (string)
-        - "reason|||duration" to include a ban duration
+        """Save a preset to a slot.
 
-        @param slot: The slot to save to. This is a number between 0 and 9.
-        @param payload: The reason text or combined reason/duration to save to the preset slot.
+        @param slot: The slot to save to (0-9)
+        @param payload: The reason text or combined reason/duration to save
         """
         import os
 
         localconfig = "localconfig"
 
-        # Read all existing lines (preserve everything beyond the 10 preset slots)
         lines = []
         if os.path.exists(localconfig):
             try:
@@ -333,19 +279,15 @@ class Chivalry:
             except Exception:
                 lines = []
 
-        # Ensure we have at least header (3 lines) + 10 preset slots (indices 3..12)
         min_len = 13
         if len(lines) < min_len:
             lines += [""] * (min_len - len(lines))
 
-        # Update the target preset slot (stored at index 3 + slot)
         preset_index = 3 + int(slot)
-        # Pad if needed (shouldn't happen due to min_len above, but safe-guard)
         if len(lines) <= preset_index:
             lines += [""] * (preset_index + 1 - len(lines))
         lines[preset_index] = payload if payload is not None else ""
 
-        # Write all lines back, preserving any extra persisted values
         try:
             with open(localconfig, 'w', encoding='utf-8') as f:
                 for line in lines:
@@ -357,8 +299,8 @@ class Chivalry:
     def LoadPreset(self, slot):
         """Load the preset payload from a slot.
 
-        @param slot: The slot to load from. This is a number between 0 and 9.
-        @returns: The stored payload (string) or None if not found.
+        @param slot: The slot to load from (0-9)
+        @returns: The stored payload (string) or None if not found
         """
         import os
 
@@ -370,7 +312,6 @@ class Chivalry:
         try:
             with open(localconfig, 'r', encoding='utf-8') as f:
                 lines = f.read().strip().split('\n')
-                # Presets start from line 4 (index 3)
                 preset_line_index = 3 + slot
                 if len(lines) > preset_line_index and lines[preset_line_index].strip():
                     return lines[preset_line_index]
@@ -381,7 +322,7 @@ class Chivalry:
     def GetAllPresets(self):
         """Get all saved presets as a dictionary.
 
-        @returns: Dictionary with slot numbers as keys and stored payload strings as values.
+        @returns: Dictionary with slot numbers as keys and payload strings as values
         """
         import os
 
@@ -394,7 +335,6 @@ class Chivalry:
         try:
             with open(localconfig, 'r', encoding='utf-8') as f:
                 lines = f.read().strip().split('\n')
-                # Presets start from line 4 (index 3)
                 for i in range(10):
                     preset_line_index = 3 + i
                     if len(lines) > preset_line_index and lines[preset_line_index].strip():
@@ -403,5 +343,3 @@ class Chivalry:
             pass
 
         return presets
-
-#Chiv win32gui window class: "UnrealWindow"

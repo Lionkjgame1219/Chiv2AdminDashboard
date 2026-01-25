@@ -4,7 +4,6 @@ import datetime
 import os
 from PyQt5.QtWidgets import QInputDialog, QMessageBox, QApplication
 
-# Global webhook variables
 webhook_primary = None
 webhook_secondary = None
 
@@ -41,15 +40,12 @@ def get_webhook_urls():
     """Get Discord webhook URLs using the correct startup flow"""
     config = load_config_from_file()
 
-    # If file exists, use what's in it (even if empty/invalid)
     if config['file_exists']:
         return config['primary_url'], config['secondary_url']
 
-    # If file doesn't exist, prompt user for initial setup
     if not config['file_exists']:
         return prompt_for_initial_setup()
 
-    # File exists but no valid URLs found - run normally without prompting
     return config['primary_url'], config['secondary_url']
 
 def prompt_for_initial_setup():
@@ -62,7 +58,6 @@ def prompt_for_initial_setup():
         temp_app = False
 
     try:
-        # Ask for primary webhook
         primary_url, ok = QInputDialog.getText(
             None,
             "Initial Setup - Primary Discord Webhook",
@@ -72,7 +67,6 @@ def prompt_for_initial_setup():
         )
 
         if not ok:
-            # User cancelled - save empty config and continue
             save_initial_config(None, None, None)
             return None, None
 
@@ -86,7 +80,6 @@ def prompt_for_initial_setup():
                 "The program will continue running. You can configure\n"
                 "the webhook later using the configuration button."
             )
-            # Save empty config and continue running
             save_initial_config(None, None, None)
             return None, None
 
@@ -94,7 +87,6 @@ def prompt_for_initial_setup():
         secondary_url = None
         discord_user_id = None
 
-        # Ask for secondary webhook if primary is provided
         if primary_url:
             secondary_url_input, ok2 = QInputDialog.getText(
                 None,
@@ -117,7 +109,6 @@ def prompt_for_initial_setup():
                         "Only the primary webhook will be configured."
                     )
 
-            # Ask for Discord user ID only if we have a valid primary webhook
             discord_user_id, ok3 = QInputDialog.getText(
                 None,
                 "Initial Setup - Discord User ID",
@@ -130,7 +121,6 @@ def prompt_for_initial_setup():
             if ok3:
                 discord_user_id = discord_user_id.strip() if discord_user_id.strip() else None
 
-        # Save initial configuration
         save_initial_config(primary_url, secondary_url, discord_user_id)
 
         return primary_url, secondary_url
@@ -147,10 +137,8 @@ def save_initial_config(primary_url, secondary_url, discord_user_id):
             f.write(f"{primary_url if primary_url else 'None'}\n")
             f.write(f"{secondary_url if secondary_url else 'None'}\n")
             f.write(f"{discord_user_id if discord_user_id else 'None'}\n")
-            # Write empty preset slots (lines 4-13)
-            for i in range(10):
+            for _ in range(10):
                 f.write("\n")
-            # Write default theme preference (line 14)
             f.write("dark\n")
     except Exception as e:
         QMessageBox.warning(
@@ -169,7 +157,6 @@ def initialize_webhook():
     primary_success = False
     secondary_success = False
 
-    # Initialize primary webhook
     if primary_url:
         try:
             webhook_primary = SyncWebhook.from_url(primary_url)
@@ -186,7 +173,6 @@ def initialize_webhook():
     else:
         webhook_primary = None
 
-    # Initialize secondary webhook
     if secondary_url:
         try:
             webhook_secondary = SyncWebhook.from_url(secondary_url)
@@ -214,12 +200,10 @@ def get_webhook_status():
     }
 
 def MessageForAdmin(user_id, username, reason, duration_or_msg, category):
-    # Check if any webhook is initialized
     if webhook_primary is None and webhook_secondary is None:
         print(f"[WEBHOOK] Discord webhooks not configured, skipping notification for {category}")
         return
 
-    # Get Discord user ID from config
     config = load_config_from_file()
     moderator_id = config['discord_user_id'] if config['discord_user_id'] else "Unknown"
 
@@ -270,9 +254,8 @@ def MessageForAdmin(user_id, username, reason, duration_or_msg, category):
                         value=f"<@{moderator_id}>",
                         inline=False)
 
-    embed.set_footer(text="Admin Interface")
+    embed.set_footer(text="AdminDashboard")
 
-    # Send to primary webhook
     if webhook_primary:
         try:
             webhook_primary.send(username="Admin Bot", embed=embed)
@@ -280,7 +263,6 @@ def MessageForAdmin(user_id, username, reason, duration_or_msg, category):
         except Exception as e:
             print(f"[WEBHOOK] Failed to send primary Discord notification: {str(e)}")
 
-    # Send to secondary webhook
     if webhook_secondary:
         try:
             webhook_secondary.send(username="Admin Bot", embed=embed)

@@ -1,7 +1,8 @@
 import sys
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QDialog,
-    QFormLayout, QLineEdit, QDialogButtonBox, QMessageBox, QListWidget, QHBoxLayout, QGroupBox, QSpacerItem, QSizePolicy, QInputDialog, QProgressBar, QCheckBox
+    QFormLayout, QLineEdit, QDialogButtonBox, QMessageBox, QListWidget, QHBoxLayout,
+    QGroupBox, QSpacerItem, QSizePolicy, QInputDialog, QProgressBar, QCheckBox
 )
 from PyQt5.QtGui import QFont, QIntValidator
 from PyQt5.QtCore import Qt, QTimer, QAbstractNativeEventFilter, QAbstractEventDispatcher
@@ -26,7 +27,6 @@ import core.wehbooks as wehbooks
 import ctypes
 import ctypes.wintypes as wintypes
 
-# Windows clipboard update message
 WM_CLIPBOARDUPDATE = 0x031D
 
 class MSG(ctypes.Structure):
@@ -51,7 +51,6 @@ class WinClipboardEventFilter(QAbstractNativeEventFilter):
                 return False, 0
             msg = MSG.from_address(int(message))
             if msg.message == WM_CLIPBOARDUPDATE:
-                # Fire callback on clipboard update
                 self._callback()
         except Exception:
             pass
@@ -62,9 +61,7 @@ user32.AddClipboardFormatListener.argtypes = [wintypes.HWND]
 user32.AddClipboardFormatListener.restype = wintypes.BOOL
 
 class InstantToolTipFilter(QObject):
-    """Global event filter that shows tooltips after a small delay.
-    Suppresses the default delayed ToolTip event so we control timing.
-    """
+    """Global event filter that shows tooltips after a small delay."""
     def __init__(self, delay_ms=500, parent=None):
         super().__init__(parent)
         self.delay_ms = int(delay_ms)
@@ -85,14 +82,12 @@ class InstantToolTipFilter(QObject):
                     self._cancel()
                 return False
             if et == QEvent.ToolTip:
-                # suppress the built-in delayed tooltip
                 return True
             if et in (QEvent.Leave, QEvent.MouseButtonPress):
                 QToolTip.hideText()
                 self._cancel()
                 return False
             if et == QEvent.MouseMove:
-                # keep timer running; no restart to avoid jitter
                 return False
         return False
 
@@ -107,7 +102,6 @@ class InstantToolTipFilter(QObject):
         if not w:
             return
         try:
-            # Only show if cursor still within widget and tooltip is set
             if not w.toolTip():
                 return
             pos = QCursor.pos()
@@ -115,7 +109,6 @@ class InstantToolTipFilter(QObject):
                 return
             QToolTip.showText(pos, w.toolTip(), w)
         except Exception:
-            # Be robust: never break the app from tooltip logic
             pass
 
 user32.RemoveClipboardFormatListener.argtypes = [wintypes.HWND]
@@ -125,7 +118,7 @@ user32.RemoveClipboardFormatListener.restype = wintypes.BOOL
 def check_chivalry_window():
     """Check if Chivalry 2 window is available"""
     try:
-        hwnd = win32gui.FindWindow(None, "Chivalry 2  ")  # Note the spaces after the 2
+        hwnd = win32gui.FindWindow(None, "Chivalry 2  ")
         return hwnd != 0
     except Exception:
         return False
@@ -135,21 +128,17 @@ class ChivalryWaitingDialog(QDialog):
         super().__init__()
         self.setWindowTitle("Waiting for Chivalry 2")
         self.setFixedSize(500, 350)
-        self.setModal(True)
 
         layout = QVBoxLayout()
         layout.setSpacing(5)
         layout.setContentsMargins(15, 15, 15, 15)
 
-        # Title
         title = QLabel("Waiting for Chivalry 2")
         title.setFont(QFont("Arial", 18, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
-        # Let global theme handle colors, reduce bottom margin
         title.setContentsMargins(0, 0, 0, 5)
         layout.addWidget(title)
 
-        # Instructions
         instructions = QLabel()
         instructions.setText(
             "Please launch your Chivalry 2 game.\n\n"
@@ -157,78 +146,64 @@ class ChivalryWaitingDialog(QDialog):
         )
         instructions.setWordWrap(True)
         instructions.setAlignment(Qt.AlignCenter)
-        # Let global theme handle colors and styling, reduce margins
         instructions.setContentsMargins(10, 5, 10, 5)
         instructions.setMinimumHeight(80)
         instructions.setMaximumHeight(80)
         instructions.setSizePolicy(instructions.sizePolicy().horizontalPolicy(), instructions.sizePolicy().Fixed)
         layout.addWidget(instructions)
 
-        # Status label - avoid CSS styling to prevent cramping
         self.status_label = QLabel("Searching for Chivalry 2 window...")
         self.status_label.setAlignment(Qt.AlignCenter)
 
-        # Set font using Qt methods instead of CSS
         font = QFont("Segoe UI", 12)
         font.setBold(True)
         self.status_label.setFont(font)
 
-        # Let the global theme handle colors - no manual color setting
         self.status_label.setContentsMargins(10, 5, 10, 5)
 
         layout.addWidget(self.status_label)
 
-        # Progress bar (indeterminate)
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0)  # Indeterminate progress
+        self.progress_bar.setRange(0, 0)
         self.progress_bar.setMinimumHeight(25)
         self.progress_bar.setStyleSheet("margin: 10px 0px;")
         layout.addWidget(self.progress_bar)
 
-        # Add some spacing before buttons
         layout.addSpacing(5)
 
-        # Button layout
         button_layout = QHBoxLayout()
 
-        # Theme toggle button
         self.theme_button = QPushButton("Dark Mode")
         self.theme_button.clicked.connect(self.toggle_theme)
         self.theme_button.setMinimumHeight(35)
-        # Let global theme handle styling
         button_layout.addWidget(self.theme_button)
 
-        # Skip button
         skip_button = QPushButton("Skip Waiting (Continue Anyway)")
         skip_button.clicked.connect(self.accept)
         skip_button.setMinimumHeight(35)
-        # Let global theme handle styling
         button_layout.addWidget(skip_button)
 
         layout.addLayout(button_layout)
 
         self.setLayout(layout)
 
-        # Force layout to be calculated immediately
         layout.activate()
         self.adjustSize()
 
-        # Timer to check for Chivalry 2 window
         self.timer = QTimer()
         self.timer.timeout.connect(self.check_window)
-        self.timer.start(1000)  # Check every second
+        self.timer.start(1000)
 
-        # Update theme button text based on current theme
         self.update_theme_button()
 
     def closeEvent(self, event):
-        """Handle window close button - reject the dialog to exit the application"""
+        """Handle window close button"""
         self.timer.stop()
-        event.ignore()  # Ignore the close event
-        self.reject()   # Call reject to properly close the dialog
+        event.ignore()
+        self.reject()
 
     def reject(self):
-        """Handle dialog rejection (Esc key or close button) - exit the application"""
+        """Handle dialog rejection"""
         self.timer.stop()
         super().reject()
 
@@ -238,19 +213,14 @@ class ChivalryWaitingDialog(QDialog):
         current_is_dark = load_theme_preference()
         new_is_dark = not current_is_dark
 
-        # Apply new theme
         if new_is_dark:
             apply_dark_theme(app)
         else:
             apply_light_theme(app)
 
-        # Save preference
         save_theme_preference(new_is_dark)
-
-        # Update button text
         self.update_theme_button()
 
-        # Force refresh of this dialog's appearance
         self.style().unpolish(self)
         self.style().polish(self)
         self.update()
@@ -269,18 +239,12 @@ class ChivalryWaitingDialog(QDialog):
             self.status_label.setText("Chivalry 2 window Detected.")
             self.status_label.setStyleSheet("font-weight: bold; color: green;")
             self.timer.stop()
-            QTimer.singleShot(1500, self.accept)  # Wait 1.5 seconds then close
+            QTimer.singleShot(1500, self.accept)
         else:
             self.status_label.setText(f"Searching for Chivalry 2 window...")
 
 def parse_player_list_from_clipboard(text: str = None):
-    """Parse players from provided clipboard text or current clipboard.
-    Strategy:
-      - Find the last occurrence of the header row (with Name/PlayFabPlayerId/EOSPlayerId...),
-        and parse only the rows that follow it. This avoids mixing old and new snapshots
-        if the clipboard happens to contain multiple blocks.
-      - Return a list of (name, playfab_id) with simple de-duplication by PlayFab ID.
-    """
+    """Parse players from provided clipboard text or current clipboard."""
     if text is None:
         try:
             text = pyperclip.paste()
@@ -288,7 +252,6 @@ def parse_player_list_from_clipboard(text: str = None):
             text = ""
     lines = (text or "").strip().splitlines()
 
-    # Find the last header line index
     header_indices = [i for i, l in enumerate(lines)
                       if ('Name' in l and 'PlayFabPlayerId' in l and 'EOSPlayerId' in l)]
     start_idx = header_indices[-1] + 1 if header_indices else (2 if len(lines) >= 3 else 0)
@@ -303,10 +266,8 @@ def parse_player_list_from_clipboard(text: str = None):
             continue
         name = parts[0]
         playfab_id = parts[1]
-        # Skip if looks like header row
         if name.lower() == 'name' or playfab_id.lower().startswith('playfab'):
             continue
-        # Basic sanity for PlayFab ID (hex-like and length >= 12)
         if len(playfab_id) < 12:
             continue
         if playfab_id in seen_ids:
@@ -324,17 +285,14 @@ class ActionForm(QDialog):
         self.setModal(True)
         self.setWindowModality(Qt.WindowModal)
 
-        # Try to connect to game
         self.game = None
         try:
             self.game = GameChivalry()
         except Exception as e:
             print(f"[ACTION FORM] Could not connect to Chivalry 2: {e}")
 
-        # Main layout
         main_layout = QVBoxLayout()
 
-        # Form layout for player info and reason
         form_layout = QFormLayout()
         self.player_id_input = QLineEdit(player_id)
         self.player_id_input.setReadOnly(True)
@@ -342,7 +300,6 @@ class ActionForm(QDialog):
         self.player_name.setReadOnly(True)
         form_layout.addRow("Player ID:", self.player_id_input)
         form_layout.addRow("Player Name:", self.player_name)
-        # Load last-used values for convenience
         default_reason_key = 'last_ban_reason' if action_name.lower() == 'ban' else 'last_kick_reason'
         self.reason_input = QLineEdit(get_persisted_value(default_reason_key, ""))
         form_layout.addRow("Reason:", self.reason_input)
@@ -356,15 +313,34 @@ class ActionForm(QDialog):
 
         main_layout.addLayout(form_layout)
 
-        # Preset buttons section
+        if action_name.lower() == "ban":
+            quick_preset_group = QGroupBox("Quick Presets")
+            quick_preset_layout = QHBoxLayout()
+
+            btn_ffa_24h = QPushButton("FFA 24h")
+            btn_ffa_24h.clicked.connect(self.apply_ffa_24h_preset)
+            btn_ffa_24h.setStyleSheet("background-color: #3498db; color: white; font-weight: bold; padding: 8px;")
+            quick_preset_layout.addWidget(btn_ffa_24h)
+
+            btn_ffa_perma = QPushButton("FFA Permaban")
+            btn_ffa_perma.clicked.connect(self.apply_ffa_perma_preset)
+            btn_ffa_perma.setStyleSheet("background-color: #e67e22; color: white; font-weight: bold; padding: 8px;")
+            quick_preset_layout.addWidget(btn_ffa_perma)
+
+            btn_cheating = QPushButton("Cheating")
+            btn_cheating.clicked.connect(self.apply_cheating_preset)
+            btn_cheating.setStyleSheet("background-color: #e74c3c; color: white; font-weight: bold; padding: 8px;")
+            quick_preset_layout.addWidget(btn_cheating)
+
+            quick_preset_group.setLayout(quick_preset_layout)
+            main_layout.addWidget(quick_preset_group)
+
         preset_group = QGroupBox("Reason Presets")
         preset_layout = QVBoxLayout()
 
-        # Determine preset slots by action type: 0-4 for Ban, 5-9 for Kick
         is_ban = (action_name.lower() == "ban")
         self.preset_slots = list(range(0, 5)) if is_ban else list(range(5, 10))
 
-        # Help icon with tooltip for hover preview
         tip_icon = QLabel("Tip")
         tip_icon.setToolTip("You can hover a loading button to preview the saved reason" + (" and duration" if is_ban else ""))
         tip_icon.setFixedSize(30, 20)
@@ -372,7 +348,6 @@ class ActionForm(QDialog):
         tip_icon.setStyleSheet("QLabel { color: #888888; font-weight: bold; border: 1px solid #888888; border-radius: 8px; }")
         preset_layout.addWidget(tip_icon, 0, Qt.AlignRight)
 
-        # Load preset buttons (single row of 5 buttons)
         load_layout1 = QHBoxLayout()
         self.load_buttons = []
         for idx, slot in enumerate(self.preset_slots):
@@ -385,7 +360,6 @@ class ActionForm(QDialog):
         preset_layout.addWidget(QLabel(("Load Presets:" if is_ban else "Load Presets:")))
         preset_layout.addLayout(load_layout1)
 
-        # Overwrite preset buttons (single row of 5 buttons)
         save_layout1 = QHBoxLayout()
         self.save_buttons = []
         for idx, slot in enumerate(self.preset_slots):
@@ -398,7 +372,6 @@ class ActionForm(QDialog):
         preset_layout.addWidget(QLabel(("Save / Overwrite Presets:" if is_ban else "Save / Overwrite Presets:")))
         preset_layout.addLayout(save_layout1)
 
-        # Clear preset buttons (single row of 5 buttons)
         clear_layout1 = QHBoxLayout()
         self.clear_buttons = []
         for idx, slot in enumerate(self.preset_slots):
@@ -414,33 +387,27 @@ class ActionForm(QDialog):
         preset_group.setLayout(preset_layout)
         main_layout.addWidget(preset_group)
 
-        # Tickbox to not notify in-game
-
         self.notify_in_game = QCheckBox("Notify in-game")
         self.notify_in_game.setChecked(True)
         main_layout.addWidget(self.notify_in_game)
 
-        # Action buttons
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.perform_action)
         buttons.rejected.connect(self.reject)
         main_layout.addWidget(buttons)
 
-        # Apply persisted values for admin/server/add time inputs in parent dashboard
         parent = self.parent()
         if parent and isinstance(parent, AdminDashboard):
-            # Pre-fill admin/server message inputs
             parent.admin_message_input.setText(get_persisted_value('last_admin_msg', ""))
             parent.server_message_input.setText(get_persisted_value('last_server_msg', ""))
 
         self.action_name = action_name
         self.setLayout(main_layout)
 
-        # Update button tooltips with preset contents
         self.update_preset_tooltips()
 
     def load_preset(self, slot):
-        """Load a preset into the inputs (reason and duration if present)"""
+        """Load a preset into the inputs"""
         from core.guiServer import Chivalry
         chiv = Chivalry()
         preset_text = chiv.LoadPreset(slot)
@@ -452,22 +419,46 @@ class ActionForm(QDialog):
                 reason_val, duration_val = preset_text.split('|||', 1)
                 reason_val = reason_val.strip()
                 duration_val = duration_val.strip()
-            # Fill reason
             self.reason_input.setText(reason_val)
-            # Fill duration if this is a Ban form and duration is present
             if self.time_input is not None and duration_val is not None:
                 self.time_input.setText(duration_val)
             QMessageBox.information(self, "Preset Loaded", f"Preset {slot} loaded successfully!")
         else:
             QMessageBox.warning(self, "No Preset", f"No preset found in slot {slot}.")
 
+    def apply_ffa_24h_preset(self):
+        """Execute FFA 24h ban"""
+        self.execute_quick_preset("FFA", 24)
+
+    def apply_ffa_perma_preset(self):
+        """Execute FFA permaban"""
+        self.execute_quick_preset("FFA", 999999)
+
+    def apply_cheating_preset(self):
+        """Execute Cheating permaban"""
+        self.execute_quick_preset("Cheating", 999999)
+
+    def execute_quick_preset(self, reason, duration_hours):
+        """Execute a quick preset"""
+        saved_reason = self.reason_input.text()
+        saved_duration = self.time_input.text() if self.time_input is not None else None
+
+        self.reason_input.setText(reason)
+        if self.time_input is not None:
+            self.time_input.setText(str(duration_hours))
+
+        self.perform_action()
+
+        self.reason_input.setText(saved_reason)
+        if self.time_input is not None and saved_duration is not None:
+            self.time_input.setText(saved_duration)
+
     def save_preset(self, slot):
-        """Save the current reason (and duration if present) to a preset slot"""
+        """Save the current reason to a preset slot"""
         reason = self.reason_input.text().strip()
         if not reason:
             QMessageBox.warning(self, "Empty Reason", "Please enter a reason before saving to preset.")
             return
-        # Include duration if this is a Ban form
         preset_payload = reason
         if self.time_input is not None:
             duration = self.time_input.text().strip()
@@ -485,12 +476,11 @@ class ActionForm(QDialog):
             QMessageBox.warning(self, "Save Failed", f"Failed to save preset {slot}.")
 
     def update_preset_tooltips(self):
-        """Update tooltips for load buttons to show preset contents (reason and optional duration)"""
+        """Update tooltips for load buttons to show preset contents"""
         from core.guiServer import Chivalry
         chiv = Chivalry()
         presets = chiv.GetAllPresets()
 
-        # Get current theme to use appropriate colors
         is_dark_theme = load_theme_preference()
 
         for idx, btn in enumerate(self.load_buttons):
@@ -500,14 +490,12 @@ class ActionForm(QDialog):
                 reason_val, duration_val = preset_text.split('|||', 1) if '|||' in preset_text else (preset_text, "")
                 reason_val = reason_val.strip()
                 duration_val = duration_val.strip()
-                # Truncate reason for tooltip
                 display_reason = reason_val[:50] + "..." if len(reason_val) > 50 else reason_val
                 tooltip_text = f"Slot {idx}: {display_reason}"
                 if duration_val:
                     tooltip_text += f"  |  duration: {duration_val}"
                 btn.setToolTip(tooltip_text)
 
-                # Use theme-appropriate colors for filled slots
                 if is_dark_theme:
                     btn.setStyleSheet("QPushButton { background-color: #2d5a2d; color: #ffffff; }")
                 else:
@@ -517,7 +505,7 @@ class ActionForm(QDialog):
                 btn.setStyleSheet("")
 
     def clear_preset(self, slot):
-        """Clear a preset slot (remove reason and duration)."""
+        """Clear a preset slot"""
         from core.guiServer import Chivalry
         chiv = Chivalry()
         success = chiv.SavePreset(slot, "")
@@ -575,7 +563,9 @@ class ActionForm(QDialog):
 
             # Only send Discord notification if the action was actually executed
             if action_executed:
+                set_persisted_value('last_kick_reason', reason)
                 wehbooks.MessageForAdmin(player_id, player_name, reason, None, "kick")
+
         self.accept()
 
     def toggle_theme(self):
@@ -671,10 +661,7 @@ class PlayersWindow(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Players List")
         self.resize(600, 800)
-        self.setModal(True)
-        self.setWindowModality(Qt.ApplicationModal)
 
-        # Try to connect to game
         self.game = None
         try:
             self.game = GameChivalry()
@@ -682,7 +669,6 @@ class PlayersWindow(QDialog):
             print(f"[PLAYERS WINDOW] Could not connect to Chivalry 2: {e}")
         main_layout = QVBoxLayout()
 
-        # Info row for server name and players count
         info_row = QHBoxLayout()
         self.server_label = QLabel("Server: -")
         self.player_count_label = QLabel("Players: 0")
@@ -694,8 +680,6 @@ class PlayersWindow(QDialog):
         title.setAlignment(Qt.AlignLeft)
         top_layout.addWidget(title)
         refresh_btn = QPushButton("Refresh Player List")
-        # Register for clipboard update messages via native event filter
-        app = QApplication.instance()
         try:
             self._cb_event_filter = WinClipboardEventFilter(self._on_native_clipboard_update)
             QAbstractEventDispatcher.instance().installNativeEventFilter(self._cb_event_filter)
@@ -749,7 +733,6 @@ class PlayersWindow(QDialog):
             self.awaiting_player_list = False
             return
 
-        # Fallback if clipboard update signal does not arrive
         QTimer.singleShot(1500, self._fallback_parse_clipboard)
 
     def on_clipboard_changed(self):
@@ -877,8 +860,7 @@ class AddTimeDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Add Time")
-        self.setModal(True)
-        self.setWindowModality(Qt.WindowModal)
+        # Non-modal main dialog
         self.setMinimumWidth(400)
 
         # Main layout
@@ -936,8 +918,7 @@ class UnbanPlayerDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Unban Player")
-        self.setModal(True)
-        self.setWindowModality(Qt.WindowModal)
+        # Non-modal main dialog
         self.setMinimumWidth(450)
 
         # Main layout
@@ -987,8 +968,7 @@ class ConsoleKeyDialog(QDialog):
     def __init__(self, current_vk: str = "", parent=None):
         super().__init__(parent)
         self.setWindowTitle("Configure Console Key")
-        self.setModal(True)
-        self.setWindowModality(Qt.WindowModal)
+        # Non-modal main dialog
         self.resize(420, 180)
 
         self.captured_vk = None
@@ -1072,15 +1052,12 @@ class AdminDashboard(QWidget):
 
         status_group.setLayout(status_layout)
         main_layout.addWidget(status_group)
-        # Admin Message Section
         admin_message_group = QGroupBox("Admin Message")
         admin_message_layout = QVBoxLayout()
 
-        # Input + Send in one row
         admin_input_row = QHBoxLayout()
         self.admin_message_input = QLineEdit()
         self.admin_message_input.setPlaceholderText("Type the admin message to send...")
-        # Pre-fill from persisted cache and persist on edit
         self.admin_message_input.setText(get_persisted_value('last_admin_msg', ""))
         self.admin_message_input.editingFinished.connect(lambda: set_persisted_value('last_admin_msg', self.admin_message_input.text().strip()))
         admin_input_row.addWidget(self.admin_message_input, 1)
@@ -1095,7 +1072,6 @@ class AdminDashboard(QWidget):
         self.admin_save_buttons = []
         self.admin_clear_buttons = []
 
-        # Help icon with tooltip
         tip_icon_admin = QLabel("Tip")
         tip_icon_admin.setToolTip("You can hover a loading button to preview the saved message")
         tip_icon_admin.setFixedSize(30, 20)
@@ -1103,7 +1079,6 @@ class AdminDashboard(QWidget):
         tip_icon_admin.setStyleSheet("QLabel { color: #888888; font-weight: bold; border: 1px solid #888888; border-radius: 8px; }")
         admin_preset_layout.addWidget(tip_icon_admin, 0, Qt.AlignRight)
 
-        # Columns for each slot
         admin_columns_row = QHBoxLayout()
         for idx in range(ADMIN_PRESET_COUNT):
             col = QVBoxLayout()
@@ -1134,15 +1109,12 @@ class AdminDashboard(QWidget):
         admin_message_layout.addLayout(admin_preset_layout)
         admin_message_group.setLayout(admin_message_layout)
 
-        # Server Message Section
         server_message_group = QGroupBox("Server Message")
         server_message_layout = QVBoxLayout()
 
-        # Input + Send in one row
         server_input_row = QHBoxLayout()
         self.server_message_input = QLineEdit()
         self.server_message_input.setPlaceholderText("Type the server message to send...")
-        # Pre-fill from persisted cache and persist on edit
         self.server_message_input.setText(get_persisted_value('last_server_msg', ""))
         self.server_message_input.editingFinished.connect(lambda: set_persisted_value('last_server_msg', self.server_message_input.text().strip()))
         server_input_row.addWidget(self.server_message_input, 1)
@@ -1157,7 +1129,6 @@ class AdminDashboard(QWidget):
         self.server_save_buttons = []
         self.server_clear_buttons = []
 
-        # Help icon with tooltip
         tip_icon_server = QLabel("Tip")
         tip_icon_server.setToolTip("You can hover a loading button to preview the saved message")
         tip_icon_server.setFixedSize(30, 20)
@@ -1165,7 +1136,6 @@ class AdminDashboard(QWidget):
         tip_icon_server.setStyleSheet("QLabel { color: #888888; font-weight: bold; border: 1px solid #888888; border-radius: 8px; }")
         server_preset_layout.addWidget(tip_icon_server, 0, Qt.AlignRight)
 
-        # Columns for each slot
         server_columns_row = QHBoxLayout()
         for idx in range(SERVER_PRESET_COUNT):
             col = QVBoxLayout()
@@ -1196,11 +1166,9 @@ class AdminDashboard(QWidget):
         server_message_layout.addLayout(server_preset_layout)
         server_message_group.setLayout(server_message_layout)
 
-        # Commands Section
         commands_group = QGroupBox("Commands")
         commands_layout = QVBoxLayout()
 
-        # Row of general actions
         actions_row = QHBoxLayout()
         btn_players = QPushButton("Players List")
         btn_players.clicked.connect(self.open_players_window)
@@ -1216,7 +1184,6 @@ class AdminDashboard(QWidget):
 
         commands_layout.addLayout(actions_row)
 
-        # Arbitration subgroup
         arb_group = QGroupBox("Arbitration")
         arb_layout = QVBoxLayout()
 
@@ -1227,7 +1194,6 @@ class AdminDashboard(QWidget):
         arb_group.setLayout(arb_layout)
         commands_layout.addWidget(arb_group)
 
-        # Keep Admin/Server preset panels under Commands
         admin_server_row = QHBoxLayout()
         admin_server_row.setSpacing(12)
         admin_message_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -1239,7 +1205,6 @@ class AdminDashboard(QWidget):
         commands_group.setLayout(commands_layout)
         main_layout.addWidget(commands_group)
 
-        # Settings Section
         settings_group = QGroupBox("Settings")
         settings_layout = QVBoxLayout()
 
@@ -1251,12 +1216,10 @@ class AdminDashboard(QWidget):
         btn_discord_id_config.clicked.connect(self.configure_discord_user_id)
         settings_layout.addWidget(btn_discord_id_config)
 
-        # Configure Console Key button
         btn_console_key = QPushButton("Configure Console Key")
         btn_console_key.clicked.connect(self.configure_console_key)
         settings_layout.addWidget(btn_console_key)
 
-        # Theme toggle button
         self.theme_button = QPushButton("Dark Mode")
         self.theme_button.clicked.connect(self.toggle_theme)
         settings_layout.addWidget(self.theme_button)
@@ -1267,24 +1230,22 @@ class AdminDashboard(QWidget):
         main_layout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
         self.setLayout(main_layout)
 
-        # Now that UI is initialized, set up connection monitoring
         self.check_game_connection()
 
-        # Set up periodic connection checking timer
         self.connection_timer = QTimer()
         self.connection_timer.timeout.connect(self.check_game_connection)
-        self.connection_timer.start(5000)  # Check every 5 seconds
+        self.connection_timer.start(5000)
 
-        # Update theme button text based on current theme
         self.update_theme_button()
 
-        # Initialize tooltips/colors for admin/server presets
         self.update_admin_preset_tooltips()
         self.update_server_preset_tooltips()
 
-        # Keep track of player window instance
         self.players_window = None
         self.first_to_window = None
+        self.add_time_dialog = None
+        self.unban_player_dialog = None
+        self.console_key_dialog = None
 
     def center_on_screen(self):
         try:
@@ -1300,15 +1261,12 @@ class AdminDashboard(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Center after the widget has a native window and final frame metrics
         QTimer.singleShot(0, self.center_on_screen)
 
     def check_game_connection(self):
         """Check game and server connection status"""
-        # Check if Chivalry 2 window exists
         game_window_exists = check_chivalry_window()
 
-        # Try to connect to game if window exists but we're not connected
         if game_window_exists and not self.chivalry_connected:
             try:
                 self.game = GameChivalry()
@@ -1319,20 +1277,14 @@ class AdminDashboard(QWidget):
                 self.chivalry_connected = False
                 self.game = None
 
-        # If window doesn't exist, mark as disconnected
         elif not game_window_exists and self.chivalry_connected:
             print("[CONNECTION] Chivalry 2 window no longer found - disconnecting")
             self.chivalry_connected = False
             self.server_connected = False
             self.game = None
 
-        # Note: We don't automatically check server connection to avoid disrupting gameplay
-        # Server connection status will be determined only when user manually refreshes player list
-
-        # Update status display
         self.update_connection_status()
 
-    # ---- Admin/Server presets helpers ----
     def update_admin_preset_tooltips(self):
         is_dark_theme = load_theme_preference()
         for idx, btn in enumerate(getattr(self, 'admin_load_buttons', [])):
@@ -1408,10 +1360,6 @@ class AdminDashboard(QWidget):
         self.update_server_preset_tooltips()
 
 
-        # Note: We don't automatically check server connection to avoid disrupting gameplay
-        # Server connection status will be determined only when user manually refreshes player list
-
-        # Update status display
         self.update_connection_status()
 
     def update_connection_status(self):
@@ -1442,7 +1390,6 @@ class AdminDashboard(QWidget):
 
     def send_admin_message(self):
         msg = self.admin_message_input.text().strip()
-        # Persist last admin message
         if msg:
             set_persisted_value('last_admin_msg', msg)
 
@@ -1451,25 +1398,14 @@ class AdminDashboard(QWidget):
             return
         print(f"[ADMIN MESSAGE] {msg}")
 
-        # Try to send to game if connected
-        message_sent = False
         if self.chivalry_connected and hasattr(self.game, 'AdminSay'):
             try:
                 self.game.AdminSay(msg)
-                message_sent = True
-                #QMessageBox.information(self, "Message Sent", "Admin message sent successfully to game and Discord!")
             except Exception as e:
                 QMessageBox.warning(self, "Game Error", f"Failed to send message to game:\n{str(e)}")
 
-        # Only send Discord notification if the message was actually sent to game
-        #if message_sent:
-            # wehbooks.MessageForAdmin("N/A", "N/A", msg, None, "adminsay")
-
-        #self.admin_message_input.clear()
-
     def send_server_message(self):
         msg = self.server_message_input.text().strip()
-        # Persist last server message
         if msg:
             set_persisted_value('last_server_msg', msg)
 
@@ -1478,50 +1414,44 @@ class AdminDashboard(QWidget):
             return
         print(f"[SERVER MESSAGE] {msg}")
 
-        # Try to send to game if connected
-        message_sent = False
         if self.chivalry_connected and hasattr(self.game, 'ServerSay'):
             try:
                 self.game.ServerSay(msg)
-                message_sent = True
             except Exception as e:
                 QMessageBox.warning(self, "Game Error", f"Failed to send message to game:\n{str(e)}")
 
-        # Only send Discord notification if the message was actually sent to game
-        #if message_sent:
-            # wehbooks.MessageForAdmin("N/A", "N/A", msg, None, "serversay")
-
-        # self.server_message_input.clear()
-
     def open_players_window(self):
-        # Pre-fill dashboard fields from persisted values
         self.admin_message_input.setText(get_persisted_value('last_admin_msg', ""))
         self.server_message_input.setText(get_persisted_value('last_server_msg', ""))
 
-        # Check if player window already exists and is visible
         if self.players_window is not None and self.players_window.isVisible():
-            # Window already exists, just bring it to front (no auto-refresh)
             self.players_window.raise_()
             self.players_window.activateWindow()
         else:
-            # Create new window or reuse closed one
             if self.players_window is None:
                 self.players_window = PlayersWindow(self)
-                # Connect the finished signal to clean up reference when window is closed
                 self.players_window.finished.connect(lambda: setattr(self, 'players_window', None))
 
-            # Set focus to the dialog and bring it to front (no auto-refresh)
             self.players_window.show()
             self.players_window.raise_()
             self.players_window.activateWindow()
-            self.players_window.exec_()
 
     def open_add_time_dialog(self):
-        dialog = AddTimeDialog(parent=self)
+        # Check if dialog already exists and is visible
+        if self.add_time_dialog is not None and self.add_time_dialog.isVisible():
+            # Dialog already exists, just bring it to front
+            self.add_time_dialog.raise_()
+            self.add_time_dialog.activateWindow()
+            return
+
+        # Create new dialog
+        self.add_time_dialog = AddTimeDialog(parent=self)
         # Pre-fill last add time value
-        dialog.set_time(get_persisted_value('last_add_time', ""))
-        if dialog.exec_() == QDialog.Accepted:
-            added_time = dialog.get_time()
+        self.add_time_dialog.set_time(get_persisted_value('last_add_time', ""))
+
+        # Connect accepted signal to handle the action
+        def on_accepted():
+            added_time = self.add_time_dialog.get_time()
             print(f" +{added_time}min")
 
             # Try to add time to game if connected
@@ -1541,12 +1471,30 @@ class AdminDashboard(QWidget):
                 set_persisted_value('last_add_time', str(added_time))
                 #wehbooks.MessageForAdmin("N/A", "N/A", f"Added {added_time} minutes", added_time, "time")
 
+        self.add_time_dialog.accepted.connect(on_accepted)
+        # Connect finished signal to clean up reference when dialog is closed
+        self.add_time_dialog.finished.connect(lambda: setattr(self, 'add_time_dialog', None))
+
+        # Show non-modal dialog
+        self.add_time_dialog.show()
+        self.add_time_dialog.raise_()
+        self.add_time_dialog.activateWindow()
+
     def open_unban_dialog(self):
         """Open dialog to unban a player by PlayFabID"""
-        dialog = UnbanPlayerDialog(parent=self)
+        # Check if dialog already exists and is visible
+        if self.unban_player_dialog is not None and self.unban_player_dialog.isVisible():
+            # Dialog already exists, just bring it to front
+            self.unban_player_dialog.raise_()
+            self.unban_player_dialog.activateWindow()
+            return
 
-        if dialog.exec_() == QDialog.Accepted:
-            player_id = dialog.get_playfabid()
+        # Create new dialog
+        self.unban_player_dialog = UnbanPlayerDialog(parent=self)
+
+        # Connect accepted signal to handle the action
+        def on_accepted():
+            player_id = self.unban_player_dialog.get_playfabid()
 
             # Validate PlayFabID: must be exactly 16 characters, uppercase letters and numbers only
             if not player_id or len(player_id) != 16 or not player_id.isupper() or not player_id.isalnum():
@@ -1606,6 +1554,15 @@ class AdminDashboard(QWidget):
             else:
                 QMessageBox.warning(self, "Not Connected", "Cannot unban player - Chivalry 2 is not connected.\n\nPlease ensure Chivalry 2 is running.")
 
+        self.unban_player_dialog.accepted.connect(on_accepted)
+        # Connect finished signal to clean up reference when dialog is closed
+        self.unban_player_dialog.finished.connect(lambda: setattr(self, 'unban_player_dialog', None))
+
+        # Show non-modal dialog
+        self.unban_player_dialog.show()
+        self.unban_player_dialog.raise_()
+        self.unban_player_dialog.activateWindow()
+
     def open_first_to_window(self):
         if self.first_to_window is not None and self.first_to_window.isVisible():
             self.first_to_window.raise_()
@@ -1614,10 +1571,10 @@ class AdminDashboard(QWidget):
         self.first_to_window = FirstToScoreboardWindow(self)
         self.first_to_window.setAttribute(Qt.WA_DeleteOnClose, True)
         self.first_to_window.finished.connect(lambda: setattr(self, 'first_to_window', None))
+        # Show non-modal dialog
         self.first_to_window.show()
         self.first_to_window.raise_()
         self.first_to_window.activateWindow()
-        self.first_to_window.exec_()
 
     def prompt_wide_text(self, title, label, text):
         dlg = QInputDialog(self)
@@ -1839,17 +1796,40 @@ class AdminDashboard(QWidget):
 
     def configure_console_key(self):
         """Prompt user to press the key used to open the in-game console and persist its VK code."""
+        # Check if dialog already exists and is visible
+        if self.console_key_dialog is not None and self.console_key_dialog.isVisible():
+            # Dialog already exists, just bring it to front
+            self.console_key_dialog.raise_()
+            self.console_key_dialog.activateWindow()
+            return
+
         # Load current value if any
         try:
             current_vk = get_persisted_value('console_vk', "")
         except Exception:
             current_vk = ""
 
-        dlg = ConsoleKeyDialog(current_vk=current_vk, parent=self)
-        if dlg.exec_() == QDialog.Accepted and dlg.captured_vk is not None:
-            # Save as integer string to localconfig via persisted storage
-            set_persisted_value('console_vk', str(dlg.captured_vk))
-            QMessageBox.information(self, "Console Key Saved", f"Console key saved as VK {dlg.captured_vk}.")
+        # Create new dialog
+        self.console_key_dialog = ConsoleKeyDialog(current_vk=current_vk, parent=self)
+
+        # Connect accepted signal to handle the action
+        def on_accepted():
+            if self.console_key_dialog.captured_vk is not None:
+                # Save as integer string to localconfig via persisted storage
+                set_persisted_value('console_vk', str(self.console_key_dialog.captured_vk))
+                # Clear the cached console key to force re-detection with new value
+                from core import inputLib
+                inputLib.clearConsoleKeyCache()
+                QMessageBox.information(self, "Console Key Saved", f"Console key saved as VK {self.console_key_dialog.captured_vk}.")
+
+        self.console_key_dialog.accepted.connect(on_accepted)
+        # Connect finished signal to clean up reference when dialog is closed
+        self.console_key_dialog.finished.connect(lambda: setattr(self, 'console_key_dialog', None))
+
+        # Show non-modal dialog
+        self.console_key_dialog.show()
+        self.console_key_dialog.raise_()
+        self.console_key_dialog.activateWindow()
 
     def toggle_theme(self):
         """Toggle between dark and light theme"""
@@ -1895,8 +1875,7 @@ class AdminDashboard(QWidget):
 class FirstToScoreboardWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setModal(True)
-        self.setWindowModality(Qt.ApplicationModal)
+        # Non-modal main dialog
         self.setWindowTitle("Match Arbitration (First To)")
         self.resize(1100, 700)
         self.setSizeGripEnabled(True)
