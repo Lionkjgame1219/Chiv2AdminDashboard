@@ -96,7 +96,8 @@ You will now have access to the dashboard. Everything should be pretty straightf
 
       <img width="464" height="526" alt="image" src="https://github.com/user-attachments/assets/d5cc85aa-ec32-4d7b-94a5-0792ea683fb9" />
 
-      # New - You can now use three quick preset buttons to quickly apply a ban for the most common reasons (FFA 24h, FFA permaban, and cheating permaban).
+      **New** - You can now use three quick preset buttons to quickly apply a ban for the most common reasons (FFA 24h, FFA permaban, and cheating permaban).
+      
 
    2. Another one to simply kick him. Only a reason is gonna be required, not a duration (kicking via command has no duration, the player can come back right after).
 
@@ -119,7 +120,8 @@ Next buttons in the main dashboard :
 
    <img width="259" height="130" alt="image" src="https://github.com/user-attachments/assets/4c59d75d-6b20-4794-b1cc-cb611073352b" />
 
-# New - **"Unban Player"** is gonna open up a small window in which you can enter a PlayFabID to execute an unban and write a serversay message to confirm the effectiveness of the action.
+- **New** - **"Unban Player"** is gonna open up a small window in which you can enter a PlayFabID to execute an unban and write a serversay message to confirm the effectiveness of the action.
+
 
 - **"Match Arbitration"** is a menu that allow you to act as a referee in a match. Here are the options :
 
