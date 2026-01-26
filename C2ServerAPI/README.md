@@ -30,11 +30,11 @@ pyinstaller --onefile --noconsole --icon=[PathToAn".ico"Image] --name=[NameOfThe
 
 ---------
 
-***Disclaimer : Due to how Chivalry 2 API is *(inexisting)*, the program is working by directly simulating keyboard presses into your game to type commands in your console.***
+***Disclaimer : Due to how Chivalry 2 client API is *(inexisting)*, the program is working by directly simulating keyboard presses into your game to type commands in your console.***
 
 ***By using this method, the program will sort of "block" your inputs until the command processing is done.***
 
-***It should be pretty quick (between one and two seconds at most), but still noticeable.***
+***It should be pretty quick (between one and five seconds at most), but still noticeable.***
 
 ***Sending inputs on your side (pressing keys on your keyboard) will either, do nothing, or just introduce bugs, so please let the program be done with the command processing before trying to do anything in the game.***
 
@@ -96,6 +96,8 @@ You will now have access to the dashboard. Everything should be pretty straightf
 
       <img width="464" height="526" alt="image" src="https://github.com/user-attachments/assets/d5cc85aa-ec32-4d7b-94a5-0792ea683fb9" />
 
+      # New - You can now use three quick preset buttons to quickly apply a ban for the most common reasons (FFA 24h, FFA permaban, and cheating permaban).
+
    2. Another one to simply kick him. Only a reason is gonna be required, not a duration (kicking via command has no duration, the player can come back right after).
 
       <img width="463" height="486" alt="image" src="https://github.com/user-attachments/assets/7c922f41-a045-4c88-8673-9dcbe19cc6d5" />   
@@ -116,6 +118,8 @@ Next buttons in the main dashboard :
 (e.g. "-10" to substract 10 minutes)
 
    <img width="259" height="130" alt="image" src="https://github.com/user-attachments/assets/4c59d75d-6b20-4794-b1cc-cb611073352b" />
+
+# New - **"Unban Player"** is gonna open up a small window in which you can enter a PlayFabID to execute an unban and write a serversay message to confirm the effectiveness of the action.
 
 - **"Match Arbitration"** is a menu that allow you to act as a referee in a match. Here are the options :
 

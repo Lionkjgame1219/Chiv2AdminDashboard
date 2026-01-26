@@ -20,7 +20,7 @@ class GameChivalry():
 
         if time > 24:
             days = time // 24
-            days_text = f" ( {'Nearly ' if time % 24 else ''}{days} day{'s' if days != 1 else ''})"
+            days_text = f" ({'Nearly ' if time % 24 else ''}{days} day{'s' if days != 1 else ''})"
         else:
             days_text = ""
 

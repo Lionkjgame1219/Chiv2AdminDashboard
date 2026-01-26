@@ -164,11 +164,3 @@ def sendConsoleKey():
     else:
         print(f"[CONSOLE] Sending console key: '{console_char}'")
         return sendCharacter(console_char)
-
-def sendLetterPress(letter):
-    """Legacy function - use sendCharacter() instead."""
-    return sendCharacter(letter)
-
-def typeString(string):
-    """Legacy function - use sendString() instead."""
-    return sendString(string)

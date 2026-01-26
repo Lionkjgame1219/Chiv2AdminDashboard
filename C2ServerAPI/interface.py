@@ -2,27 +2,18 @@ import sys
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QDialog,
     QFormLayout, QLineEdit, QDialogButtonBox, QMessageBox, QListWidget, QHBoxLayout,
-    QGroupBox, QSpacerItem, QSizePolicy, QInputDialog, QProgressBar, QCheckBox
+    QGroupBox, QSpacerItem, QSizePolicy, QInputDialog, QProgressBar, QCheckBox, QToolTip, QGridLayout
 )
-from PyQt5.QtGui import QFont, QIntValidator
-from PyQt5.QtCore import Qt, QTimer, QAbstractNativeEventFilter, QAbstractEventDispatcher
-from PyQt5.QtCore import QObject, QEvent
-from PyQt5.QtGui import QCursor
-from PyQt5.QtWidgets import QToolTip
-from PyQt5.QtWidgets import QGridLayout
+from PyQt5.QtGui import QFont, QIntValidator, QCursor
+from PyQt5.QtCore import Qt, QTimer, QAbstractNativeEventFilter, QAbstractEventDispatcher, QObject, QEvent
 
 import pyperclip
-import time
 import os
-import sys
 import win32gui
-import json
-
 import re
 
 
 from core.C2ServerAPIExample import GameChivalry
-from core.guiServer import Chivalry
 import core.wehbooks as wehbooks
 import ctypes
 import ctypes.wintypes as wintypes
@@ -770,27 +761,20 @@ class PlayersWindow(QDialog):
             self.player_list.addItem(f"{name} - {pid}")
 
     def _update_info_from_text(self, text: str):
-        """Extract server name and player count and update the info row labels.
-        Expected header example:
-        "ServerName - OATS Duelyard  [Flourish to Duel Pit FFA Discord oatsduelyard] 134.255.251.182:10180"
-        """
+
         lines = (text or "").strip().splitlines()
         server_name = "-"
         if lines:
             header = lines[0].strip()
-            # Remove a trailing IP:port from header if present
             header_no_ip = re.sub(r"\s*(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\s*$", "", header)
 
-            # Preferred: capture the name after 'ServerName - ' up to a double space before the next section
             m = re.match(r"^\s*ServerName\s*-\s*(.+?)\s{2,}.*$", header_no_ip)
             if m:
                 server_name = m.group(1).strip()
             else:
-                # Fallbacks if format varies slightly
                 if header_no_ip.lower().startswith("servername") and '-' in header_no_ip:
                     try:
                         after_dash = header_no_ip.split('-', 1)[1].strip()
-                        # stop at first double-space chunk if present
                         server_name = after_dash.split('  ')[0].strip() or server_name
                     except Exception:
                         pass
@@ -799,20 +783,13 @@ class PlayersWindow(QDialog):
                         server_name = header_no_ip.split(' - ', 1)[1].split('  ')[0].strip() or server_name
                     except Exception:
                         pass
-            # Extra safety: strip any trailing IP:port if it slipped into the name
             server_name = re.sub(r"\s*(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\s*$", "", server_name)
-
-        # Count players: skip the two header lines and count rows that look like player entries
+            
         data_lines = lines[2:] if len(lines) >= 3 else []
         player_rows = [ln for ln in data_lines if " - " in ln]
         count = len(player_rows)
         self.server_label.setText(f"Server: {server_name}")
         self.player_count_label.setText(f"Players: {count}")
-
-    def populate_list(self):
-        self.player_list.clear()
-        for name, pid in self.filtered_players:
-            self.player_list.addItem(f"{name} - {pid}")
 
     def filter_players(self, text):
         text = text.lower()
@@ -2635,7 +2612,7 @@ def apply_light_theme(app):
 def main():
     app = QApplication(sys.argv)
     # Install global tooltip filter with 0.5s delay
-    app._instant_tt = InstantToolTipFilter(delay_ms=500)
+    app._instant_tt = InstantToolTipFilter(delay_ms=300)
     app.installEventFilter(app._instant_tt)
 
 
