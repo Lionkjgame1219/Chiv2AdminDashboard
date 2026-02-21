@@ -2624,7 +2624,71 @@ def apply_light_theme(app):
     app.setStyleSheet(light_stylesheet)
 
 def main():
+    # ---- Auto-update (Windows packaged .exe only) ----
+    # If an update is available, a temporary updater copy of this executable is spawned,
+    # this process exits, the updater replaces the old .exe, and then relaunches the app.
+    #
+    # NOTE: The updater process itself runs this same entrypoint with '--apply-update'.
+    # In that mode we do NOT start the full dashboard UI.
+    try:
+        from core import autoupdater
+        if "--apply-update" in sys.argv:
+            if autoupdater.handle_update_flow():
+                sys.exit(0)
+    except Exception:
+        # If updater mode fails, just exit to avoid launching the full UI while files may be changing.
+        if "--apply-update" in sys.argv:
+            sys.exit(0)
+
     app = QApplication(sys.argv)
+
+    # Minimal visual feedback during the startup update check (indeterminate progress).
+    update_dialog = None
+    update_label = None
+    try:
+        is_frozen = bool(getattr(sys, "frozen", False))
+        if is_frozen and ("--skip-update" not in sys.argv):
+            update_dialog = QDialog()
+            update_dialog.setWindowTitle("AdminDashboard")
+            update_dialog.setFixedSize(460, 130)
+
+            layout = QVBoxLayout(update_dialog)
+            update_label = QLabel("Checking for updates...")
+            update_label.setWordWrap(True)
+            bar = QProgressBar()
+            bar.setRange(0, 0)
+            layout.addWidget(update_label)
+            layout.addWidget(bar)
+            update_dialog.show()
+            app.processEvents()
+
+            def _update_status(msg: str) -> None:
+                if update_label is not None:
+                    update_label.setText(str(msg))
+                app.processEvents()
+
+            from core import autoupdater
+            if autoupdater.handle_update_flow(status_callback=_update_status):
+                # Give the user a brief moment to see the status text before exiting.
+                try:
+                    app.processEvents()
+                except Exception:
+                    pass
+                sys.exit(0)
+    except Exception as e:
+        # Never prevent the dashboard from launching due to update check failures.
+        try:
+            print(f"[UPDATE] Auto-update skipped/failed: {e}")
+        except Exception:
+            pass
+    finally:
+        try:
+            if update_dialog is not None:
+                update_dialog.close()
+                app.processEvents()
+        except Exception:
+            pass
+
     # Install global tooltip filter with 0.5s delay
     app._instant_tt = InstantToolTipFilter(delay_ms=300)
     app.installEventFilter(app._instant_tt)

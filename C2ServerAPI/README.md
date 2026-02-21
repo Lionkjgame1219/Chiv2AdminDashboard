@@ -23,7 +23,8 @@ python interface.py
 
 If you want to compile the script to a .exe file (GUI only), run from the C2ServerAPI folder:
 ```
-pyinstaller --onefile --noconsole --icon=[PathToAn".ico"Image] --name=[NameOfTheCompiledProgram] --add-data "core;core" --hidden-import pyperclip --hidden-import PyQt5.QtWidgets --hidden-import PyQt5.QtGui --hidden-import PyQt5.QtCore --hidden-import=discord --hidden-import=win32gui --hidden-import=win32con --hidden-import=win32process --hidden-import=win32api interface.py
+py versionmetadata.py
+pyinstaller --onefile --noconsole --icon=[PathToAn".ico"Image] --name=[NameOfTheCompiledProgram] --version-file build\versionfile.txt --add-data "core;core" --hidden-import pyperclip --hidden-import PyQt5.QtWidgets --hidden-import PyQt5.QtGui --hidden-import PyQt5.QtCore --hidden-import=discord --hidden-import=win32gui --hidden-import=win32con --hidden-import=win32process --hidden-import=win32api interface.py
 ```
 
 ### First launch
