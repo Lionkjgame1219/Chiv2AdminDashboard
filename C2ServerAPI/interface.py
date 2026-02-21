@@ -4,8 +4,8 @@ from PyQt5.QtWidgets import (
     QFormLayout, QLineEdit, QDialogButtonBox, QMessageBox, QListWidget, QHBoxLayout,
     QGroupBox, QSpacerItem, QSizePolicy, QInputDialog, QProgressBar, QCheckBox, QToolTip, QGridLayout
 )
-from PyQt5.QtGui import QFont, QIntValidator, QCursor
-from PyQt5.QtCore import Qt, QTimer, QAbstractNativeEventFilter, QAbstractEventDispatcher, QObject, QEvent
+from PyQt5.QtGui import QFont, QIntValidator, QCursor, QDesktopServices
+from PyQt5.QtCore import Qt, QTimer, QAbstractNativeEventFilter, QAbstractEventDispatcher, QObject, QEvent, QUrl
 
 import pyperclip
 import os
@@ -175,6 +175,20 @@ class ChivalryWaitingDialog(QDialog):
         button_layout.addWidget(skip_button)
 
         layout.addLayout(button_layout)
+
+        launch_layout = QHBoxLayout()
+
+        steam_button = QPushButton("Launch via Steam")
+        steam_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("steam://rungameid/1824220")))
+        steam_button.setMinimumHeight(35)
+        launch_layout.addWidget(steam_button)
+
+        epic_button = QPushButton("Launch via Epic Games")
+        epic_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("com.epicgames.launcher://apps/bd46d4ce259349e5bd8b3ded20274737%3A4c4a6c0767304c9d830f3f36f2b29018%3APeppermint?action=launch&silent=true")))
+        epic_button.setMinimumHeight(35)
+        launch_layout.addWidget(epic_button)
+
+        layout.addLayout(launch_layout)
 
         self.setLayout(layout)
 
