@@ -1,10 +1,11 @@
 import sys
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QDialog,
-    QFormLayout, QLineEdit, QDialogButtonBox, QMessageBox, QListWidget, QHBoxLayout,
-    QGroupBox, QSpacerItem, QSizePolicy, QInputDialog, QProgressBar, QCheckBox, QToolTip, QGridLayout
+    QFormLayout, QLineEdit, QDialogButtonBox, QMessageBox, QListWidget, QListWidgetItem,
+    QHBoxLayout, QGroupBox, QSpacerItem, QSizePolicy, QInputDialog, QProgressBar,
+    QCheckBox, QToolTip, QGridLayout
 )
-from PyQt5.QtGui import QFont, QIntValidator, QCursor, QDesktopServices
+from PyQt5.QtGui import QFont, QIntValidator, QCursor, QDesktopServices, QColor
 from PyQt5.QtCore import Qt, QTimer, QAbstractNativeEventFilter, QAbstractEventDispatcher, QObject, QEvent, QUrl
 
 import pyperclip
@@ -605,38 +606,197 @@ class PlayerActionDialog(QDialog):
     def __init__(self, player_id, player_name, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Actions for {player_name} (ID: {player_id})")
-        self.resize(380, 150)
+        self.resize(800, 320)
         self.setModal(True)
         self.setWindowModality(Qt.WindowModal)
         self.player_id = player_id
         self.player_name = player_name
-        layout = QVBoxLayout()
-        label = QLabel(f"Choose an action for player <b>{player_name}</b> (ID: {player_id}):")
+
+        # ── Main layout: left = action buttons, right = history panel ──
+        main_layout = QHBoxLayout()
+        main_layout.setSpacing(12)
+
+        # ── Left panel ──
+        left_widget = QWidget()
+        left_widget.setFixedWidth(280)
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
+        label = QLabel(f"Choose an action for player <b>{player_name}</b>:")
         label.setWordWrap(True)
         label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(label)
+        left_layout.addWidget(label)
+
+        id_label = QLabel(f"<small>ID: {player_id}</small>")
+        id_label.setAlignment(Qt.AlignCenter)
+        left_layout.addWidget(id_label)
+
         btn_ban = QPushButton("Ban")
         btn_ban.setStyleSheet("background-color:#e74c3c; color: white; font-weight: bold;")
         btn_ban.clicked.connect(self.ban_player)
-        layout.addWidget(btn_ban)
+        left_layout.addWidget(btn_ban)
+
         btn_kick = QPushButton("Kick")
         btn_kick.setStyleSheet("background-color:#f39c12; color: white; font-weight: bold;")
         btn_kick.clicked.connect(self.kick_player)
-        layout.addWidget(btn_kick)
+        left_layout.addWidget(btn_kick)
 
-        # Player profile button
         btn_profile = QPushButton("Chivalry2Stats player profile")
         btn_profile.setStyleSheet("background-color:#3498db; color: white; font-weight: bold;")
         btn_profile.clicked.connect(self.open_player_profile)
-        layout.addWidget(btn_profile)
+        left_layout.addWidget(btn_profile)
 
-        # Copy player ID button
         btn_copy_id = QPushButton("Copy Player's PlayFabID")
         btn_copy_id.setStyleSheet("background-color:#2ecc71; color: white; font-weight: bold;")
         btn_copy_id.clicked.connect(self.copy_player_id)
-        layout.addWidget(btn_copy_id)
+        left_layout.addWidget(btn_copy_id)
 
-        self.setLayout(layout)
+        left_layout.addStretch()
+
+        # ── Right panel: sanctions + moderator notes ──
+        self.history_group = QGroupBox("Player History")
+        history_layout = QVBoxLayout()
+        history_layout.setContentsMargins(6, 6, 6, 6)
+
+        self.history_list = QListWidget()
+        self.history_list.setAlternatingRowColors(True)
+        self.history_list.setSelectionMode(QListWidget.NoSelection)
+        self.history_list.setFocusPolicy(Qt.NoFocus)
+        self.history_list.setWordWrap(True)
+        history_layout.addWidget(self.history_list)
+
+        self.history_group.setLayout(history_layout)
+
+        main_layout.addWidget(left_widget)
+        main_layout.addWidget(self.history_group, 1)
+
+        self.setLayout(main_layout)
+
+        # Populate the history panel from the database
+        self._load_history()
+
+    def _load_history(self):
+        """Query the database and populate the player history list.
+
+        Shows both sanctions (bans / kicks) and moderator notes (redflags),
+        each in its own colour-coded section, most-recent-first within each.
+        """
+        self.history_list.clear()
+        try:
+            from core.database_manager import SanctionManager, RedFlagManager
+            sanctions = SanctionManager.get_sanctions_by_playfab_id(self.player_id)
+            redflags  = RedFlagManager.get_redflags_by_playfab_id(self.player_id)
+
+            s_count = len(sanctions)
+            f_count = len(redflags)
+            self.history_group.setTitle(
+                f"Player History  ({s_count} sanction{'s' if s_count != 1 else ''},  "
+                f"{f_count} note{'s' if f_count != 1 else ''})"
+            )
+
+            if not sanctions and not redflags:
+                placeholder = QListWidgetItem("  No history on record.")
+                placeholder.setFlags(placeholder.flags() & ~Qt.ItemIsEnabled)
+                self.history_list.addItem(placeholder)
+                return
+
+            # ── Sanctions ──────────────────────────────────────────────────
+            for sanction in sanctions:
+                if sanction.sanction_type == 'ban':
+                    if sanction.duration_hours:
+                        h = sanction.duration_hours
+                        if h >= 8760:
+                            dur = "Permanent"
+                        elif h >= 24:
+                            dur = f"{int(h // 24)}d"
+                        else:
+                            dur = f"{int(h)}h"
+                        type_str = f"BAN ({dur})"
+                    else:
+                        type_str = "BAN"
+                else:
+                    type_str = "KICK"
+
+                if sanction.revoked_at:
+                    type_str += " [REVOKED]"
+
+                date_str = (
+                    sanction.applied_at.strftime("%Y-%m-%d %H:%M")
+                    if sanction.applied_at else "Unknown date"
+                )
+                mod_str = f"  ·  by {sanction.moderator_name}" if sanction.moderator_name else ""
+                item = QListWidgetItem(f"[{type_str}]  {sanction.reason}  —  {date_str}{mod_str}")
+
+                tooltip_lines = [
+                    f"Type:      {sanction.sanction_type.upper()}",
+                    f"Reason:    {sanction.reason}",
+                    f"Date:      {date_str}",
+                    f"Moderator: {sanction.moderator_name or 'Unknown'}",
+                ]
+                if sanction.duration_hours:
+                    tooltip_lines.append(f"Duration:  {sanction.duration_hours}h")
+                if sanction.revoked_at:
+                    tooltip_lines.append(
+                        f"Revoked:   {sanction.revoked_at.strftime('%Y-%m-%d %H:%M')}"
+                    )
+                item.setToolTip("\n".join(tooltip_lines))
+
+                if sanction.revoked_at:
+                    item.setForeground(QColor('#888888'))
+                elif sanction.sanction_type == 'ban':
+                    item.setForeground(QColor('#e74c3c'))
+                else:
+                    item.setForeground(QColor('#f39c12'))
+
+                self.history_list.addItem(item)
+
+            # ── Separator ──────────────────────────────────────────────────
+            if sanctions and redflags:
+                sep = QListWidgetItem("── Moderator Notes " + "─" * 30)
+                sep.setFlags(sep.flags() & ~Qt.ItemIsEnabled)
+                sep.setForeground(QColor('#888888'))
+                self.history_list.addItem(sep)
+
+            # ── Moderator notes (redflags) ─────────────────────────────────
+            for redflag in redflags:
+                note_str = "NOTE"
+                if redflag.resolved_at:
+                    note_str += " [RESOLVED]"
+
+                date_str = (
+                    redflag.created_at.strftime("%Y-%m-%d %H:%M")
+                    if redflag.created_at else "Unknown date"
+                )
+                mod_str = f"  ·  by {redflag.moderator_name}" if redflag.moderator_name else ""
+                item = QListWidgetItem(f"[{note_str}]  {redflag.reason}  —  {date_str}{mod_str}")
+
+                tooltip_lines = [
+                    f"Type:      Moderator Note",
+                    f"Note:      {redflag.reason}",
+                    f"Date:      {date_str}",
+                    f"Moderator: {redflag.moderator_name or 'Unknown'}",
+                ]
+                if redflag.resolved_at:
+                    tooltip_lines.append(
+                        f"Resolved:  {redflag.resolved_at.strftime('%Y-%m-%d %H:%M')}"
+                    )
+                    if redflag.resolution_note:
+                        tooltip_lines.append(f"Resolution: {redflag.resolution_note}")
+                item.setToolTip("\n".join(tooltip_lines))
+
+                if redflag.resolved_at:
+                    item.setForeground(QColor('#888888'))
+                else:
+                    item.setForeground(QColor('#9b59b6'))  # purple for open notes
+
+                self.history_list.addItem(item)
+
+        except Exception as e:
+            print(f"[PLAYER ACTION DIALOG] Could not load history: {e}")
+            self.history_group.setTitle("Player History  (unavailable)")
+            err_item = QListWidgetItem("  Database unavailable.")
+            err_item.setFlags(err_item.flags() & ~Qt.ItemIsEnabled)
+            self.history_list.addItem(err_item)
 
     def copy_player_id(self):
         pyperclip.copy(self.player_id)

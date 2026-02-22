@@ -1,0 +1,36 @@
+{
+    "_comment": "Example database configuration file. Copy this to 'database_config.json' and update with your settings.",
+    
+    "_sqlite_example": {
+        "type": "sqlite",
+        "path": "sanctions.db"
+    },
+    
+    "_postgresql_example": {
+        "type": "postgresql",
+        "host": "your-database-server.com",
+        "port": 5432,
+        "database": "sanctions",
+        "username": "your_username",
+        "password": "your_password",
+        "pool_size": 5,
+        "max_overflow": 10,
+        "pool_timeout": 30
+    },
+    
+    "_mysql_example": {
+        "type": "mysql",
+        "host": "your-database-server.com",
+        "port": 3306,
+        "database": "sanctions",
+        "username": "your_username",
+        "password": "your_password",
+        "pool_size": 5,
+        "max_overflow": 10,
+        "pool_timeout": 30
+    },
+    
+    "type": "sqlite",
+    "path": "sanctions.db"
+}
+
