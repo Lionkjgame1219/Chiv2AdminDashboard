@@ -188,6 +188,11 @@ class ChivalryWaitingDialog(QDialog):
         epic_button.setMinimumHeight(35)
         launch_layout.addWidget(epic_button)
 
+        xbox_button = QPushButton("Launch via Xbox")
+        xbox_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("msxbox://game/?productId=9N7CJX93ZGWN")))
+        xbox_button.setMinimumHeight(35)
+        launch_layout.addWidget(xbox_button)
+
         layout.addLayout(launch_layout)
 
         self.setLayout(layout)
