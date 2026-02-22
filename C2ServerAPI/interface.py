@@ -2642,7 +2642,6 @@ def main():
 
     app = QApplication(sys.argv)
 
-    # Minimal visual feedback during the startup update check (indeterminate progress).
     update_dialog = None
     update_label = None
     try:
@@ -2669,14 +2668,12 @@ def main():
 
             from core import autoupdater
             if autoupdater.handle_update_flow(status_callback=_update_status):
-                # Give the user a brief moment to see the status text before exiting.
                 try:
                     app.processEvents()
                 except Exception:
                     pass
                 sys.exit(0)
     except Exception as e:
-        # Never prevent the dashboard from launching due to update check failures.
         try:
             print(f"[UPDATE] Auto-update skipped/failed: {e}")
         except Exception:
@@ -2689,19 +2686,16 @@ def main():
         except Exception:
             pass
 
-    # Install global tooltip filter with 0.5s delay
     app._instant_tt = InstantToolTipFilter(delay_ms=300)
     app.installEventFilter(app._instant_tt)
 
 
-    # Load and apply saved theme preference
     is_dark_theme = load_theme_preference()
     if is_dark_theme:
         apply_dark_theme(app)
     else:
         apply_light_theme(app)
 
-    # Check if we should wait for Chivalry 2
     if "--no-wait" not in sys.argv and not check_chivalry_window():
         waiting_dialog = ChivalryWaitingDialog()
         result = waiting_dialog.exec_()

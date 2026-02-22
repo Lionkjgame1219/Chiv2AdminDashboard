@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import calendar
 from typing import Callable, Optional
 
 # Auto-update for the PyInstaller onefile Windows build.
@@ -209,6 +210,40 @@ def _get_file_version_tuple(path: str):
         return None
 
 
+def _format_version(v) -> str:
+    if not v:
+        return "unknown"
+    try:
+        return ".".join(map(str, tuple(v)))
+    except Exception:
+        return str(v)
+
+
+def _exe_fingerprint(path: str):
+    """Return a cheap fingerprint for the current executable.
+
+    Used to avoid update loops when file version metadata is missing or stale.
+    """
+
+    try:
+        return int(os.path.getsize(path)), int(os.path.getmtime(path))
+    except Exception:
+        return None, None
+
+
+def _installed_recently(state: dict, window_s: float = 15 * 60) -> bool:
+    try:
+        ts = state.get("installed_at")
+        if not ts:
+            return False
+        # Written as UTC: 2025-01-01T00:00:00Z
+        t = time.strptime(str(ts), "%Y-%m-%dT%H:%M:%SZ")
+        installed_epoch = calendar.timegm(t)
+        return (time.time() - float(installed_epoch)) <= float(window_s)
+    except Exception:
+        return False
+
+
 def _download(
     url: str,
     out_path: str,
@@ -328,6 +363,17 @@ def _run_apply_update(
         st["installed_remote_id"] = remote_ver
         st["installed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         st["installed_path"] = target
+
+        # Record a cheap fingerprint so we can recognize that *this* exe is the one we installed,
+        # even if its embedded file version resource is missing/stale.
+        size, mtime = _exe_fingerprint(target)
+        st["installed_exe_size"] = size
+        st["installed_exe_mtime"] = mtime
+        try:
+            st["installed_local_file_version"] = _format_version(_get_file_version_tuple(target))
+        except Exception:
+            st["installed_local_file_version"] = None
+
         _save_state(st)
 
     except Exception as e:
@@ -408,14 +454,51 @@ def handle_update_flow(argv=None, status_callback: Optional[Callable[[str], None
         if not remote_id:
             remote_id = pick.get("release_tag") or None
 
+        # Loop prevention: if we already installed this remote_id onto *this* executable,
+        # don't keep applying the same update again.
+        cur_size, cur_mtime = _exe_fingerprint(exe_path)
+        st_size = st.get("installed_exe_size")
+        st_mtime = st.get("installed_exe_mtime")
+        fingerprint_matches = (
+            cur_size is not None
+            and cur_mtime is not None
+            and st_size is not None
+            and st_mtime is not None
+            and int(st_size) == int(cur_size)
+            and int(st_mtime) == int(cur_mtime)
+        )
+
+        # If the file timestamp changes (e.g. antivirus / copy / restore), the fingerprint may not match.
+        # If we recorded what file version we *saw* right after installing, use that as an additional
+        # lightweight signal that we're still running the installed exe.
+        state_local_v = st.get("installed_local_file_version")
+        version_matches_state = bool(state_local_v) and (_format_version(current_v) == str(state_local_v))
+
+        already_installed = (
+            remote_id is not None
+            and installed_id is not None
+            and str(remote_id) == str(installed_id)
+            and (fingerprint_matches or version_matches_state or _installed_recently(st))
+        )
+
+        _safe_status(
+            status_callback,
+            f"Current version: {_format_version(current_v)} | Latest: {_format_version(remote_v)}",
+        )
+
         if remote_v is None and installed_id == pick.get("release_tag"):
             return False
 
         needs = False
-        if current_v and remote_v:
+        if already_installed:
+            # We have high confidence we already applied this exact update to this exe.
+            # (Prevents infinite loops when file version metadata doesn't change.)
+            needs = False
+        elif current_v and remote_v:
             needs = tuple(remote_v) > tuple(current_v)
         elif remote_v:
-            needs = str(remote_id) != str(installed_id)
+            # No readable local file version -> rely on state/fingerprint.
+            needs = (str(remote_id) != str(installed_id)) or (not fingerprint_matches)
         else:
             needs = pick.get("release_tag") != installed_id
 
