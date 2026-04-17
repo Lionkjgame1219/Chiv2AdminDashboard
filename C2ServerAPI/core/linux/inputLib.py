@@ -80,7 +80,7 @@ def getConsoleKey():
                     lines = f.read().splitlines()
                 if len(lines) > 26 and lines[26].strip():
                     vk_val = int(lines[26].strip())
-                    result = (None, None) 
+                    result = (None, vk_val)
                     _console_key_cache = result
                     return result
             except Exception:
@@ -120,5 +120,12 @@ def clearConsoleKeyCache():
 def sendConsoleKey():
     """Send the appropriate console key."""
     console_char, configured_vk = getConsoleKey()
-    print(f"[CONSOLE] Sending console key: '{console_char}'")
-    return sendKeyPress(console_char)
+    if configured_vk is not None:
+        # Fallback for Linux where a virtual key integer is meaningless.
+        # We'll just press grave if they try to use a Windows-configured VK.
+        print(f"[CONSOLE] Saved VK configuration found but ignored on Linux. Using 'grave'")
+        return sendKeyPress('grave')
+    else:
+        print(f"[CONSOLE] Sending console key: '{console_char}'")
+        return sendKeyPress(console_char)
+

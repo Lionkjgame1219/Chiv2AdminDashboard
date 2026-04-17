@@ -13,8 +13,8 @@ import calendar
 from typing import Callable, Optional
 
 # Auto-update for the PyInstaller onefile Windows build.
-# Normal mode: on startup, check GitHub releases for the latest .exe asset and update if needed.
-# Updater mode: invoked as a *separate* executable copy so it can replace the original exe.
+# Normal mode: on startup, check GitHub releases for the latest bin asset and update if needed.
+# Updater mode: invoked as a *separate* executable copy so it can replace the original executable.
 
 GITHUB_REPO = "Lionkjgame1219/Chiv2AdminDashboard"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=100"
@@ -148,10 +148,57 @@ def _http_json(url: str, timeout_s: float = 5.0):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def find_latest_exe_asset(releases, preferred_filename: str = ""):
-    # Prefer stable releases; fall back to pre-releases if no stable exe exists.
+def _is_platform_asset(name: str) -> bool:
+    """Return True if *name* is a binary asset appropriate for the current platform.
+
+    Windows  – must end with ``.exe``.
+    Linux    – must not carry a Windows / macOS / archive / document extension.
+               Bare executables (no extension) and ``.AppImage`` files are accepted.
+    macOS    – ``.dmg`` or ``.pkg`` only (left as a future-friendly guard).
+    """
+    import platform
+
+    name_lc = name.lower()
+    system = platform.system()
+
+    if system == "Windows":
+        return name_lc.endswith(".exe")
+
+    if system == "Darwin":
+        return name_lc.endswith(".dmg") or name_lc.endswith(".pkg")
+
+    # Linux (and any other POSIX-like system)
+    # Explicitly allowed
+    if name_lc.endswith(".appimage"):
+        return True
+
+    # Compound archive extensions that os.path.splitext misses
+    _COMPOUND_EXTS = (".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst")
+    for cext in _COMPOUND_EXTS:
+        if name_lc.endswith(cext):
+            return False
+
+    _NON_LINUX_EXTS = {
+        # Windows
+        ".exe", ".msi", ".dll", ".bat", ".cmd", ".ps1",
+        # macOS
+        ".dmg", ".pkg",
+        # Archives
+        ".zip", ".tar", ".gz", ".bz2", ".xz", ".zst", ".7z", ".rar",
+        # Documents / metadata
+        ".txt", ".md", ".json", ".xml", ".yaml", ".yml",
+        ".pdf", ".html", ".rst", ".sha256", ".sig", ".asc",
+    }
+    _, ext = os.path.splitext(name_lc)
+    return ext not in _NON_LINUX_EXTS
+
+
+def find_latest_bin_asset(releases, preferred_filename: str = ""):
+    # Prefer stable releases; fall back to pre-releases if no stable bin exists.
+    import platform as _platform
     preferred_lc = (preferred_filename or "").strip().lower()
     preferred_stem = os.path.splitext(preferred_lc)[0] if preferred_lc else ""
+    on_linux = _platform.system() not in ("Windows", "Darwin")
 
     def candidates(allow_prerelease: bool):
         for rel in releases or []:
@@ -162,7 +209,7 @@ def find_latest_exe_asset(releases, preferred_filename: str = ""):
             tag_ver = parse_semver(rel.get("tag_name") or "")
             for a in rel.get("assets") or []:
                 name = a.get("name") or ""
-                if not name.lower().endswith(".exe"):
+                if not _is_platform_asset(name):
                     continue
                 yield rel, a, tag_ver
 
@@ -184,6 +231,12 @@ def find_latest_exe_asset(releases, preferred_filename: str = ""):
                 prefer = 1
             else:
                 prefer = 0
+
+            # On Linux give an extra boost to assets that are explicitly labelled
+            # for Linux (e.g. "Chiv2AdminDashboard-linux"), so they win over a
+            # generic bare binary if both are present in the same release.
+            if on_linux and "linux" in name_lc and prefer < 3:
+                prefer = max(prefer, 1) + 1  # promote but never exceed exact-match (3)
 
             key = (prefer, v is not None, v or (0, 0, 0, 0), asset.get("updated_at") or "")
             if best is None or key > best[0]:
@@ -344,11 +397,20 @@ def _run_apply_update(
 
     backup = target + ".old"
     try:
+        import platform
         _safe_status(status_callback, "Preparing update...")
         tmp_dir = tempfile.mkdtemp(prefix="chiv2adm_update_")
-        dl_path = os.path.join(tmp_dir, "new.exe")
+        if platform.system() == 'Windows':
+            dl_path = os.path.join(tmp_dir, "new.exe")
+        else:
+            dl_path = os.path.join(tmp_dir, "new")
+
         _safe_status(status_callback, "Downloading update...")
         _download(url, dl_path, status_callback=status_callback, progress_callback=progress_callback)
+
+        if platform.system() != 'Windows':
+            os.chmod(dl_path, 0o755)
+
 
         _safe_status(status_callback, "Installing update...")
 
@@ -435,7 +497,7 @@ def handle_update_flow(argv=None, status_callback: Optional[Callable[[str], None
     try:
         _safe_status(status_callback, "Checking for updates...")
         releases = _http_json(GITHUB_RELEASES_API, timeout_s=5.0)
-        pick = find_latest_exe_asset(releases, preferred_filename=os.path.basename(sys.executable))
+        pick = find_latest_bin_asset(releases, preferred_filename=os.path.basename(sys.executable))
         if not pick or not pick.get("download_url"):
             return False
 
@@ -511,8 +573,12 @@ def handle_update_flow(argv=None, status_callback: Optional[Callable[[str], None
             return False
 
         # Spawn updater from a temp copy of ourselves so the original exe can be replaced.
+        import platform
         tmp = tempfile.gettempdir()
-        updater = os.path.join(tmp, f"Chiv2AdminDashboard_updater_{os.getpid()}.exe")
+        if platform.system() == 'Windows':
+            updater = os.path.join(tmp, f"Chiv2AdminDashboard_updater_{os.getpid()}.exe")
+        else:
+            updater = os.path.join(tmp, f"Chiv2AdminDashboard_updater_{os.getpid()}")
         try:
             shutil.copy2(exe_path, updater)
         except Exception:

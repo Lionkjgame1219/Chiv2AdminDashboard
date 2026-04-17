@@ -1,12 +1,13 @@
 # Chivalry 2 GUI Server Moderation Panel
 
-## **This program is only meant to work on Windows systems for now, future Linux support _might_ come someday**_, or not..._
+## **This program now officially supports both Windows and Linux (Proton/Wayland/X11) systems, but minor flaws in the solution may still be present if you are on Linux.**
 
 ### Setup
 
 **This section is only of interest if you plan to work with the source files directly. If you plan to use the compiled version from the [releases page](https://github.com/Lionkjgame1219/ModerationOVALOGICIEL/releases), you can skip this part.**
 
-Make sure to have all of the required Python libraries for the GUI (no OCR needed):
+#### Windows Requirements
+Make sure to have all of the required Python libraries for the GUI:
 ```
 pip install PyQt5
 pip install pyperclip
@@ -14,17 +15,45 @@ pip install pywin32
 pip install discord.py
 ```
 
+#### Linux Requirements
+If running on Linux, the tool controls the game via X11 injection and `xdotool`. You will need to install the following packages using your distribution's package manager:
+
+On Debian/Ubuntu-based systems:
+```
+sudo apt install xdotool xclip
+```
+*(Use `wl-clipboard` instead of `xclip` if you are exclusively on Wayland)*
+
+Then install the Python dependencies:
+```
+pip install PyQt5
+pip install pyperclip
+pip install discord.py
+```
+
+> **Note for Linux / Wayland users:**
+> When the game copies the player list to your clipboard in Steam Proton, it runs through XWayland. To ensure the clipboard is synced so this native Python tool can read it, you may need to run a sync command in the background, like: `wl-paste -t text -w xclip -selection clipboard`
+>
+> **Note for Desktop Environments without xdotool support (e.g. some native Wayland setups):**
+> This tool requires XWayland or an X11 environment so `xdotool` can focus the window and send keyboard events. If your setup does not support `xdotool`, you may need to use tools like `ydotool` (requires replacing `xdotool` calls with `ydotool` in the `core/linux/inputLib.py` and `guiServer.py` files).
+
+
 Normally, everything should be working from there.
 
-To run the script, you can run this command into a terminal, either using **cmd** or **powershell**, **within the "C2ServerAPI" folder**:
+To run the script, you can run this command into a terminal, either using **cmd**, **powershell** or **bash**, **within the "C2ServerAPI" folder**:
 ```
 python interface.py
 ```
 
-If you want to compile the script to a .exe file (GUI only), run from the C2ServerAPI folder:
+If you want to compile the script to a Windows .exe file (GUI only), run from the C2ServerAPI folder:
 ```
 py versionmetadata.py
 pyinstaller --onefile --noconsole --icon=[PathToAn".ico"Image] --name=[NameOfTheCompiledProgram] --version-file build\versionfile.txt --add-data "core;core" --hidden-import pyperclip --hidden-import PyQt5.QtWidgets --hidden-import PyQt5.QtGui --hidden-import PyQt5.QtCore --hidden-import=discord --hidden-import=win32gui --hidden-import=win32con --hidden-import=win32process --hidden-import=win32api interface.py
+```
+
+If you want to compile the script to a Linux binary (GUI only), run from the C2ServerAPI folder:
+```
+pyinstaller --onefile --noconsole --name=[NameOfTheCompiledProgram] --add-data "core:core" --hidden-import pyperclip --hidden-import PyQt5.QtWidgets --hidden-import PyQt5.QtGui --hidden-import PyQt5.QtCore --hidden-import=discord interface.py
 ```
 
 ### First launch

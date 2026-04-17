@@ -1811,6 +1811,12 @@ class AdminDashboard(QWidget):
 
     def configure_console_key(self):
         """Prompt user to press the key used to open the in-game console and persist its VK code."""
+        import sys
+        if sys.platform != 'win32':
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Not Available", "Customizing the console key is currently only supported on Windows.\n\nOn Linux, the tool automatically uses the grave accent (`) or superscript 2 (²) depending on your layout.")
+            return
+
         # Check if dialog already exists and is visible
         if self.console_key_dialog is not None and self.console_key_dialog.isVisible():
             # Dialog already exists, just bring it to front
