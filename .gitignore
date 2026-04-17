@@ -7,12 +7,7 @@ C2ServerAPI/RegisterUnchainedServer.errorlog.txt
 C2ServerAPI/localconfig
 C2ServerAPI/AdminDashboard.spec
 /C2ServerAPI/tests
-database_config.json
-*.db
-*.sqlite
-*.sqlite3
-*.sql
-backup_*.sql
+
 __pycache__/
 *.pyc
 *.pyo

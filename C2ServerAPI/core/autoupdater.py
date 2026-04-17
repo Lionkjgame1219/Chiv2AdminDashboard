@@ -97,7 +97,11 @@ def _is_frozen() -> bool:
 
 
 def _state_path() -> str:
-    base = os.getenv("LOCALAPPDATA") or tempfile.gettempdir()
+    import platform
+    if platform.system() == 'Windows':
+        base = os.getenv("LOCALAPPDATA") or tempfile.gettempdir()
+    else:
+        base = os.getenv("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
     d = os.path.join(base, APPDATA_DIRNAME)
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, "autoupdate_state.json")
