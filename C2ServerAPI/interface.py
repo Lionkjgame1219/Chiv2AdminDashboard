@@ -2,13 +2,16 @@ import sys
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QDialog,
     QFormLayout, QLineEdit, QDialogButtonBox, QMessageBox, QListWidget, QHBoxLayout,
-    QGroupBox, QSpacerItem, QSizePolicy, QInputDialog, QProgressBar, QCheckBox, QToolTip, QGridLayout
+    QGroupBox, QSpacerItem, QSizePolicy, QInputDialog, QProgressBar, QCheckBox, QToolTip, QGridLayout,
+    QScrollArea, QFrame, QListWidgetItem
 )
-from PyQt5.QtGui import QFont, QIntValidator, QCursor, QDesktopServices
+from PyQt5.QtGui import QFont, QIntValidator, QCursor, QDesktopServices, QColor, QBrush
 from PyQt5.QtCore import Qt, QTimer, QAbstractNativeEventFilter, QAbstractEventDispatcher, QObject, QEvent, QUrl
 
 import pyperclip
 import os
+import json
+import datetime
 import win32gui
 import re
 
@@ -538,9 +541,8 @@ class ActionForm(QDialog):
                 QMessageBox.warning(self, "Error", "Please enter a valid number for time.")
                 return
             time_hour = int(time_str)
-            print(f"[{self.action_name.upper()}] Player ID={player_id}, Reason={reason}, Time={time_hour} hours")
+            print(f"[BAN] Player ID={player_id}, Reason={reason}, Time={time_hour} hours")
 
-            # Try to execute the ban command if game is connected
             action_executed = False
             if hasattr(self.game, 'banbyid'):
                 try:
@@ -551,16 +553,20 @@ class ActionForm(QDialog):
                 except Exception as e:
                     QMessageBox.warning(self, "Game Connection Error", f"Could not execute ban command:\n{str(e)}")
 
-            # Only send Discord notification if the action was actually executed
             if action_executed:
-                # Persist last-used values for bans
                 set_persisted_value('last_ban_reason', reason)
                 set_persisted_value('last_ban_duration', str(time_hour))
                 wehbooks.MessageForAdmin(player_id, player_name, reason, time_hour, "ban")
-        else:
-            print(f"[{self.action_name.upper()}] Player ID={player_id}, Reason={reason}")
 
-            # Try to execute the kick command if game is connected
+        elif self.action_name.lower() == "warn":
+            print(f"[WARN] Player ID={player_id}, Reason={reason}")
+            # Warning is Discord-only — no in-game command needed
+            wehbooks.MessageForAdmin(player_id, player_name, reason, None, "warn")
+            set_persisted_value('last_kick_reason', reason)
+
+        else:
+            print(f"[KICK] Player ID={player_id}, Reason={reason}")
+
             action_executed = False
             if hasattr(self.game, 'kickbyid'):
                 try:
@@ -571,7 +577,6 @@ class ActionForm(QDialog):
                 except Exception as e:
                     QMessageBox.warning(self, "Game Connection Error", f"Could not execute kick command:\n{str(e)}")
 
-            # Only send Discord notification if the action was actually executed
             if action_executed:
                 set_persisted_value('last_kick_reason', reason)
                 wehbooks.MessageForAdmin(player_id, player_name, reason, None, "kick")
@@ -601,42 +606,315 @@ class ActionForm(QDialog):
         self.style().polish(self)
         self.update()
 
+def _load_all_sanctions() -> list:
+    """Return every record from discordlogshistory, oldest-first."""
+    records = []
+    if not os.path.exists(DISCORD_LOG_FILE):
+        return records
+    try:
+        with open(DISCORD_LOG_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return records
+
+
+def _load_sanctions_for_player(player_id: str) -> list:
+    """Return all discordlogshistory records whose PlayFabID matches player_id."""
+    records = []
+    if not os.path.exists(DISCORD_LOG_FILE):
+        return records
+    try:
+        with open(DISCORD_LOG_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                    if record.get('PlayFabID', '').upper() == player_id.upper():
+                        records.append(record)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return records
+
+
+def _get_player_status(player_id: str):
+    """Return the most severe current status for a player based on log history.
+
+    Returns:
+        'banned'   — has an active ban (timestamp + duration hours > now)
+        'cautioned'— has a kick or warning logged within the last 30 days
+        None       — no notable recent sanctions
+    """
+    now          = datetime.datetime.now(datetime.timezone.utc)
+    one_month_ago = now - datetime.timedelta(days=30)
+    cautioned    = False
+
+    for record in _load_sanctions_for_player(player_id):
+        action   = record.get('action', '')
+        ts_raw   = record.get('timestamp', '')
+        duration = record.get('Duration', '')
+        if not ts_raw:
+            continue
+        try:
+            ts = datetime.datetime.fromisoformat(ts_raw.replace('Z', '+00:00'))
+        except Exception:
+            continue
+
+        if action == 'ban' and duration:
+            try:
+                ban_end = ts + datetime.timedelta(hours=float(duration.rstrip('h')))
+                if ban_end > now:
+                    return 'banned'
+            except Exception:
+                pass
+
+        if action in ('kick', 'warn') and ts >= one_month_ago:
+            cautioned = True
+
+    return 'cautioned' if cautioned else None
+
+
+def _hex_to_rgb(hex_color: str) -> tuple:
+    """Convert a #rrggbb hex string to an (r, g, b) tuple."""
+    h = hex_color.lstrip('#')
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def _build_sanction_card(record: dict) -> QFrame:
+    """Build a colour-coded QFrame card representing one sanction record.
+
+    The card uses a subtle rgba tinted background so it appears as a
+    distinct surface element in both the dark and light themes without
+    hard-coding any opaque background colour.
+    """
+    duration = record.get('Duration', '')
+    reason   = record.get('Reason', '')
+    username = record.get('Username', '')
+    action   = record.get('action', '')
+
+    # Use stored action key; fall back to field-based inference for old records
+    if action == 'ban'   or (not action and duration):
+        action_label, color = 'BAN',     '#e74c3c'
+    elif action == 'kick' or (not action and reason and username):
+        action_label, color = 'KICK',    '#f39c12'
+    elif action == 'warn':
+        action_label, color = 'WARNING', '#d4ac0d'
+    elif action == 'unban' or (not action and not reason):
+        action_label, color = 'UNBAN',   '#2ecc71'
+    else:
+        action_label, color = action.upper() or '?', '#95a5a6'
+
+    # Format ISO timestamp to a readable form
+    ts_raw = record.get('timestamp', '')
+    try:
+        ts = ts_raw[:10] + '  ' + ts_raw[11:16] + ' UTC'
+    except Exception:
+        ts = ts_raw
+
+    r, g, b = _hex_to_rgb(color)
+
+    frame = QFrame()
+    frame.setFrameShape(QFrame.StyledPanel)
+    # rgba background tint works in both dark and light themes.
+    # Inner QLabels explicitly clear border/background so the global
+    # stylesheet's QLabel rules don't leave ghost artefacts.
+    frame.setStyleSheet(f"""
+        QFrame {{
+            background-color : rgba({r},{g},{b},0.07);
+            border           : 1px solid rgba({r},{g},{b},0.45);
+            border-left      : 4px solid {color};
+            border-radius    : 5px;
+        }}
+        QLabel {{
+            border           : none;
+            background-color : transparent;
+        }}
+    """)
+
+    card_layout = QVBoxLayout(frame)
+    card_layout.setContentsMargins(10, 6, 10, 6)
+    card_layout.setSpacing(3)
+
+    # Header row: action badge + timestamp
+    header = QHBoxLayout()
+    lbl_action = QLabel(action_label)
+    lbl_action.setFont(QFont('Segoe UI', 9, QFont.Bold))
+    lbl_action.setStyleSheet(f'color: {color};')
+    lbl_ts = QLabel(ts)
+    lbl_ts.setStyleSheet('color: gray; font-size: 8pt;')
+    lbl_ts.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    header.addWidget(lbl_action)
+    header.addStretch()
+    header.addWidget(lbl_ts)
+    card_layout.addLayout(header)
+
+    # Thin separator line between header and fields
+    sep = QFrame()
+    sep.setFrameShape(QFrame.HLine)
+    sep.setStyleSheet(f'border: none; border-top: 1px solid rgba({r},{g},{b},0.3); background-color: transparent;')
+    sep.setFixedHeight(1)
+    card_layout.addWidget(sep)
+
+    def _add_row(label_text: str, value: str):
+        if not value:
+            return
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        lbl_key = QLabel(f'{label_text}:')
+        lbl_key.setFont(QFont('Segoe UI', 8, QFont.Bold))
+        lbl_key.setFixedWidth(72)
+        lbl_val = QLabel(value)
+        lbl_val.setWordWrap(True)
+        lbl_val.setFont(QFont('Segoe UI', 8))
+        row.addWidget(lbl_key)
+        row.addWidget(lbl_val, 1)
+        card_layout.addLayout(row)
+
+    _add_row('Username',  username)
+    _add_row('Reason',    reason)
+    _add_row('Duration',  duration)
+    _add_row('Moderator', f'<@{record.get("ModeratorID", "")}>' if record.get('ModeratorID') else '')
+
+    return frame
+
+
 class PlayerActionDialog(QDialog):
     def __init__(self, player_id, player_name, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Actions for {player_name} (ID: {player_id})")
-        self.resize(380, 150)
+        self.resize(720, 380)
         self.setModal(True)
         self.setWindowModality(Qt.WindowModal)
         self.player_id = player_id
         self.player_name = player_name
-        layout = QVBoxLayout()
-        label = QLabel(f"Choose an action for player <b>{player_name}</b> (ID: {player_id}):")
+
+        # Root: actions on the left, sanction history on the right
+        root = QHBoxLayout()
+        root.setSpacing(10)
+        root.setContentsMargins(12, 12, 12, 12)
+
+        # ── Left panel: action buttons ────────────────────────────────
+        left = QVBoxLayout()
+        left.setSpacing(6)
+
+        label = QLabel(
+            f"Choose an action for<br/><b>{player_name}</b>"
+            f"<br/><small style='color:gray;'>{player_id}</small>"
+        )
         label.setWordWrap(True)
         label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(label)
-        btn_ban = QPushButton("Ban")
-        btn_ban.setStyleSheet("background-color:#e74c3c; color: white; font-weight: bold;")
-        btn_ban.clicked.connect(self.ban_player)
-        layout.addWidget(btn_ban)
-        btn_kick = QPushButton("Kick")
-        btn_kick.setStyleSheet("background-color:#f39c12; color: white; font-weight: bold;")
-        btn_kick.clicked.connect(self.kick_player)
-        layout.addWidget(btn_kick)
+        left.addWidget(label)
 
-        # Player profile button
-        btn_profile = QPushButton("Chivalry2Stats player profile")
-        btn_profile.setStyleSheet("background-color:#3498db; color: white; font-weight: bold;")
-        btn_profile.clicked.connect(self.open_player_profile)
-        layout.addWidget(btn_profile)
+        def _action_btn(text, color, slot):
+            b = QPushButton(text)
+            b.setMinimumHeight(38)
+            b.setStyleSheet(
+                f"QPushButton {{ background-color:{color}; color:white; font-weight:bold; border-radius:4px; }}"
+                f"QPushButton:hover {{ background-color:{color}cc; }}"
+            )
+            b.clicked.connect(slot)
+            return b
 
-        # Copy player ID button
-        btn_copy_id = QPushButton("Copy Player's PlayFabID")
-        btn_copy_id.setStyleSheet("background-color:#2ecc71; color: white; font-weight: bold;")
-        btn_copy_id.clicked.connect(self.copy_player_id)
-        layout.addWidget(btn_copy_id)
+        left.addWidget(_action_btn("Ban",    '#e74c3c', self.ban_player))
+        left.addWidget(_action_btn("Kick",   '#f39c12', self.kick_player))
+        left.addWidget(_action_btn("Warn",   '#d4ac0d', self.warn_player))
+        left.addWidget(_action_btn("Chivalry2Stats Profile", '#3498db', self.open_player_profile))
+        left.addWidget(_action_btn("Copy PlayFabID",         '#2ecc71', self.copy_player_id))
+        left.addStretch()
 
-        self.setLayout(layout)
+        left_widget = QWidget()
+        left_widget.setLayout(left)
+        left_widget.setFixedWidth(210)
+        root.addWidget(left_widget)
+
+        # ── Vertical divider ──────────────────────────────────────────
+        divider = QFrame()
+        divider.setFrameShape(QFrame.VLine)
+        divider.setFrameShadow(QFrame.Sunken)
+        root.addWidget(divider)
+
+        # ── Right panel: sanction history ─────────────────────────────
+        right = QVBoxLayout()
+        right.setSpacing(6)
+
+        sanctions   = _load_sanctions_for_player(player_id)
+        count       = len(sanctions)
+        now         = datetime.datetime.now(datetime.timezone.utc)
+        month_ago   = now - datetime.timedelta(days=30)
+
+        # Find most recent warning issued within the last 30 days
+        pinned_warning = None
+        for record in reversed(sanctions):          # reversed = most-recent first
+            if record.get('action') == 'warn':
+                try:
+                    ts = datetime.datetime.fromisoformat(
+                        record['timestamp'].replace('Z', '+00:00'))
+                    if ts >= month_ago:
+                        pinned_warning = record
+                except Exception:
+                    pass
+                break  # only check the most recent warn regardless of date
+
+        # Pinned warning section (outside scroll area)
+        if pinned_warning:
+            pin_label = QLabel("⚠  Active Warning (issued within the last 30 days)")
+            pin_label.setStyleSheet("color:#d4ac0d; font-weight:bold; font-size:9pt;")
+            right.addWidget(pin_label)
+            right.addWidget(_build_sanction_card(pinned_warning))
+            sep = QFrame()
+            sep.setFrameShape(QFrame.HLine)
+            sep.setFrameShadow(QFrame.Sunken)
+            right.addWidget(sep)
+
+        history_label = QLabel(
+            f"<b>Sanction History</b> &mdash; "
+            f"{count} record{'s' if count != 1 else ''}"
+        )
+        history_label.setAlignment(Qt.AlignCenter)
+        right.addWidget(history_label)
+
+        # Scrollable sanction list (pinned warning excluded)
+        pinned_id = pinned_warning.get('id') if pinned_warning else None
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        scroll_content = QWidget()
+        scroll_layout  = QVBoxLayout(scroll_content)
+        scroll_layout.setSpacing(6)
+        scroll_layout.setContentsMargins(4, 4, 4, 4)
+
+        scrollable = [r for r in reversed(sanctions) if r.get('id') != pinned_id]
+        if scrollable:
+            for record in scrollable:
+                scroll_layout.addWidget(_build_sanction_card(record))
+        elif not pinned_warning:
+            empty = QLabel("No sanctions found in log history.")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setStyleSheet("color:gray; font-style:italic;")
+            scroll_layout.addWidget(empty)
+
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        right.addWidget(scroll)
+
+        right_widget = QWidget()
+        right_widget.setLayout(right)
+        root.addWidget(right_widget, 1)
+
+        self.setLayout(root)
 
     def copy_player_id(self):
         pyperclip.copy(self.player_id)
@@ -648,6 +926,10 @@ class PlayerActionDialog(QDialog):
 
     def kick_player(self):
         form = ActionForm("Kick", self.player_id, self.player_name, parent=self)
+        form.exec_()
+
+    def warn_player(self):
+        form = ActionForm("Warn", self.player_id, self.player_name, parent=self)
         form.exec_()
 
     def open_player_profile(self):
@@ -776,8 +1058,17 @@ class PlayersWindow(QDialog):
 
     def populate_list(self):
         self.player_list.clear()
+        white = QBrush(QColor('white'))
         for name, pid in self.filtered_players:
-            self.player_list.addItem(f"{name} - {pid}")
+            item = QListWidgetItem(f"{name} - {pid}")
+            status = _get_player_status(pid)
+            if status == 'banned':
+                item.setBackground(QBrush(QColor('#c0392b')))
+                item.setForeground(white)
+            elif status == 'cautioned':
+                item.setBackground(QBrush(QColor('#d35400')))
+                item.setForeground(white)
+            self.player_list.addItem(item)
 
     def _update_info_from_text(self, text: str):
 
@@ -1012,6 +1303,104 @@ class ConsoleKeyDialog(QDialog):
         self.status.setText(f"Captured key: VK {self.captured_vk}. Click OK to save or press another key.")
         self.ok_button.setEnabled(True)
 
+class SanctionSearchDialog(QDialog):
+    """Full-history search dialog: filter by Username, PlayFabID, or both."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Sanction History Search")
+        self.resize(780, 560)
+        self.setModal(True)
+
+        # Load the full history once
+        self._all_records = list(reversed(_load_all_sanctions()))  # most-recent first
+
+        root = QVBoxLayout()
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
+        self.setLayout(root)
+
+        # ── Search bar row ────────────────────────────────────────────
+        bar_row = QHBoxLayout()
+
+        self._search_input = QLineEdit()
+        self._search_input.setPlaceholderText("Type to search…")
+        self._search_input.setMinimumHeight(32)
+        self._search_input.textChanged.connect(self._refresh)
+        bar_row.addWidget(self._search_input, 1)
+
+        root.addLayout(bar_row)
+
+        # ── Result count label ────────────────────────────────────────
+        self._result_label = QLabel(
+            f"Showing all {len(self._all_records)} record(s). "
+            f"Type above to filter."
+        )
+        self._result_label.setStyleSheet("color: gray; font-style: italic;")
+        root.addWidget(self._result_label)
+
+        # ── Scroll area ───────────────────────────────────────────────
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        root.addWidget(self._scroll)
+
+        self._refresh()
+
+    # ── Internal helpers ──────────────────────────────────────────────
+
+    def _refresh(self):
+        term = self._search_input.text().strip().lower()
+
+        if not term:
+            matches = self._all_records
+        else:
+            seen    = set()
+            matches = []
+            for record in self._all_records:
+                rid = record.get('id', '')
+                if rid in seen:
+                    continue
+                if (term in record.get('Username',  '').lower() or
+                        term in record.get('PlayFabID', '').lower()):
+                    seen.add(rid)
+                    matches.append(record)
+
+        count = len(matches)
+        if not term:
+            self._result_label.setText(
+                f"Showing all {count} record(s). Type above to filter."
+            )
+        else:
+            self._result_label.setText(
+                f"{count} result(s) for \"{self._search_input.text().strip()}\""
+            )
+
+        # Rebuild scroll content
+        content = QWidget()
+        layout  = QVBoxLayout(content)
+        layout.setSpacing(6)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        if matches:
+            for record in matches:
+                # Player identity header above each card
+                name = record.get('Username') or '—'
+                pfid = record.get('PlayFabID') or '—'
+                hdr  = QLabel(f"<b>{name}</b>  <span style='color:gray;font-size:8pt;'>{pfid}</span>")
+                hdr.setContentsMargins(2, 6, 0, 0)
+                layout.addWidget(hdr)
+                layout.addWidget(_build_sanction_card(record))
+        else:
+            empty = QLabel("No matching records found.")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setStyleSheet("color: gray; font-style: italic; padding: 24px;")
+            layout.addWidget(empty)
+
+        layout.addStretch()
+        self._scroll.setWidget(content)
+
+
 class AdminDashboard(QWidget):
     def __init__(self):
         super().__init__()
@@ -1201,6 +1590,10 @@ class AdminDashboard(QWidget):
         commands_group.setLayout(commands_layout)
         main_layout.addWidget(commands_group)
 
+        btn_sanction_search = QPushButton("Sanction History")
+        btn_sanction_search.clicked.connect(lambda: SanctionSearchDialog(self).exec_())
+        main_layout.addWidget(btn_sanction_search)
+
         settings_group = QGroupBox("Settings")
         settings_layout = QVBoxLayout()
 
@@ -1211,6 +1604,18 @@ class AdminDashboard(QWidget):
         btn_discord_id_config = QPushButton("Configure Discord User ID")
         btn_discord_id_config.clicked.connect(self.configure_discord_user_id)
         settings_layout.addWidget(btn_discord_id_config)
+
+        btn_discord_bot_token = QPushButton("Set Discord Bot Token")
+        btn_discord_bot_token.clicked.connect(self.configure_discord_bot_token)
+        settings_layout.addWidget(btn_discord_bot_token)
+
+        btn_discord_channel_id = QPushButton("Set Discord Channel ID")
+        btn_discord_channel_id.clicked.connect(self.configure_discord_channel_id)
+        settings_layout.addWidget(btn_discord_channel_id)
+
+        btn_fetch_discord = QPushButton("Fetch Discord Channel Messages")
+        btn_fetch_discord.clicked.connect(self.fetch_discord_channel_messages)
+        settings_layout.addWidget(btn_fetch_discord)
 
         btn_console_key = QPushButton("Configure Console Key")
         btn_console_key.clicked.connect(self.configure_console_key)
@@ -1790,6 +2195,180 @@ class AdminDashboard(QWidget):
                 f"Unable to save Discord User ID:\n{str(e)}"
             )
 
+    def configure_discord_bot_token(self):
+        """Allow user to set the Discord Bot Token used for channel scraping."""
+        current_token = get_persisted_value('discord_bot_token', '')
+        if current_token == 'None':
+            current_token = ''
+
+        token, ok = self.prompt_wide_text(
+            "Discord Bot Token",
+            "Enter your Discord Bot Token:\n"
+            "(Discord Developer Portal > Your Application > Bot > Token)\n"
+            "(Leave empty to clear)",
+            current_token
+        )
+        if not ok:
+            return
+
+        token = token.strip()
+        set_persisted_value('discord_bot_token', token if token else 'None')
+
+    def configure_discord_channel_id(self):
+        """Allow user to set the Discord Channel ID to scrape."""
+        current_channel = get_persisted_value('discord_channel_id', '')
+        if current_channel == 'None':
+            current_channel = ''
+
+        channel_id, ok = QInputDialog.getText(
+            self,
+            "Discord Channel ID",
+            "Enter the Discord Channel ID to scrape:\n"
+            "(Right-click the channel in Discord > Copy Channel ID)\n"
+            "(Developer Mode must be enabled in Discord settings)",
+            text=current_channel
+        )
+        if not ok:
+            return
+
+        channel_id = channel_id.strip()
+        if channel_id and not channel_id.isdigit():
+            QMessageBox.warning(self, "Invalid Channel ID", "Channel ID must be a numeric value.")
+            return
+
+        set_persisted_value('discord_channel_id', channel_id if channel_id else 'None')
+
+    def fetch_discord_channel_messages(self):
+        """Fetch all webhook messages from the configured Discord channel and save to discordlogshistory."""
+        import urllib.request
+        import urllib.error
+        import json
+        import time
+
+        token = get_persisted_value('discord_bot_token', '')
+        channel_id = get_persisted_value('discord_channel_id', '')
+
+        if not token or token == 'None':
+            QMessageBox.warning(
+                self, "Not Configured",
+                "No Discord Bot Token configured.\n"
+                "Please use 'Set Discord Bot Token' first."
+            )
+            return
+        if not channel_id or channel_id == 'None':
+            QMessageBox.warning(
+                self, "Not Configured",
+                "No Discord Channel ID configured.\n"
+                "Please use 'Set Discord Channel ID' first."
+            )
+            return
+
+        progress_dialog = QDialog(self)
+        progress_dialog.setWindowTitle("Fetching Messages...")
+        progress_dialog.setModal(True)
+        pd_layout = QVBoxLayout()
+        pd_label = QLabel("Connecting to Discord API, please wait...")
+        pd_layout.addWidget(pd_label)
+        pd_progress = QProgressBar()
+        pd_progress.setRange(0, 0)
+        pd_layout.addWidget(pd_progress)
+        progress_dialog.setLayout(pd_layout)
+        progress_dialog.resize(380, 80)
+        progress_dialog.show()
+        QApplication.processEvents()
+
+        all_messages = []
+        before = None
+        headers = {
+            'Authorization': f'Bot {token}',
+            'Content-Type': 'application/json',
+            'User-Agent': 'OVAAdminTool/1.0'
+        }
+
+        try:
+            while True:
+                url = f'https://discord.com/api/v10/channels/{channel_id}/messages?limit=100'
+                if before:
+                    url += f'&before={before}'
+
+                req = urllib.request.Request(url, headers=headers)
+
+                try:
+                    with urllib.request.urlopen(req, timeout=15) as response:
+                        data = json.loads(response.read().decode('utf-8'))
+                except urllib.error.HTTPError as e:
+                    if e.code == 429:
+                        try:
+                            error_data = json.loads(e.read().decode('utf-8'))
+                            retry_after = float(error_data.get('retry_after', 1.0))
+                        except Exception:
+                            retry_after = 1.0
+                        pd_label.setText(f"Rate limited — retrying in {retry_after:.1f}s...")
+                        QApplication.processEvents()
+                        time.sleep(retry_after)
+                        continue
+                    elif e.code == 401:
+                        progress_dialog.close()
+                        QMessageBox.critical(self, "Authentication Failed",
+                                             "Invalid Bot Token. Please reconfigure the Discord Bot Scraper.")
+                        return
+                    elif e.code == 403:
+                        progress_dialog.close()
+                        QMessageBox.critical(self, "Access Denied",
+                                             "The bot does not have permission to read this channel.\n"
+                                             "Make sure it has the 'Read Message History' permission.")
+                        return
+                    elif e.code == 404:
+                        progress_dialog.close()
+                        QMessageBox.critical(self, "Channel Not Found",
+                                             "Channel ID not found. Please verify the Channel ID is correct.")
+                        return
+                    else:
+                        progress_dialog.close()
+                        QMessageBox.critical(self, "HTTP Error", f"Discord API returned HTTP {e.code}.")
+                        return
+
+                if not data:
+                    break
+
+                webhook_messages = [m for m in data if m.get('webhook_id')]
+                all_messages.extend(webhook_messages)
+                before = data[-1]['id']
+                pd_label.setText(f"Fetched {len(all_messages)} webhook messages so far...")
+                QApplication.processEvents()
+
+                if len(data) < 100:
+                    break
+
+                time.sleep(0.25)
+
+        except Exception as e:
+            progress_dialog.close()
+            QMessageBox.critical(self, "Error", f"An unexpected error occurred:\n{str(e)}")
+            return
+
+        progress_dialog.close()
+
+        if not all_messages:
+            return
+
+        # Sort oldest first (by snowflake ID, which is chronological)
+        all_messages.sort(key=lambda m: m['id'])
+
+        # Filter out messages already stored in the log file
+        existing_ids = _load_discord_log_ids()
+        new_messages = [m for m in all_messages if m.get('id') not in existing_ids]
+
+        if not new_messages:
+            return
+
+        try:
+            with open(DISCORD_LOG_FILE, 'a', encoding='utf-8') as f:
+                for msg in new_messages:
+                    f.write(_serialize_discord_message(msg) + '\n')
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Could not write discordlogshistory:\n{str(e)}")
+
     def configure_console_key(self):
         """Prompt user to press the key used to open the in-game console and persist its VK code."""
         # Check if dialog already exists and is visible
@@ -2146,6 +2725,102 @@ class FirstToScoreboardWindow(QDialog):
             pass
         return False
 
+# ---- Discord log history (JSON Lines database) ----
+
+DISCORD_LOG_FILE = "discordlogshistory"
+
+
+def _load_discord_log_ids() -> set:
+    """Read discordlogshistory and return the set of all stored message IDs."""
+    ids = set()
+    if not os.path.exists(DISCORD_LOG_FILE):
+        return ids
+    try:
+        with open(DISCORD_LOG_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        record = json.loads(line)
+                        msg_id = record.get('id')
+                        if msg_id:
+                            ids.add(msg_id)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return ids
+
+
+def _serialize_discord_message(msg: dict) -> str:
+    """Serialize a single Discord webhook message to a flat JSON line.
+
+    Stored fields: id, timestamp, action, PlayFabID, Username, Reason,
+                   Duration, ModeratorID
+
+    Action is extracted from the bold word(s) in the embed description:
+      "A **ban** has been executed"     → ban
+      "An **unban** has been executed"  → unban
+      "A **kick** has been executed"    → kick
+      "A **warning** has been issued"   → warn
+      "A **First To** match …"          → ft
+    """
+    _ACTION_MAP = {
+        'ban':      'ban',
+        'unban':    'unban',
+        'kick':     'kick',
+        'warning':  'warn',
+        'first to': 'ft',
+    }
+
+    record = {
+        'id':          msg.get('id', ''),
+        'timestamp':   msg.get('timestamp', ''),
+        'action':      '',
+        'PlayFabID':   '',
+        'Username':    '',
+        'Reason':      '',
+        'Duration':    '',
+        'ModeratorID': '',
+    }
+
+    for emb in msg.get('embeds', []):
+        # Derive action from embed description
+        desc = emb.get('description', '')
+        m = re.search(r'\*\*([^*]+)\*\*', desc)
+        if m:
+            bold = m.group(1).lower()
+            for key, val in _ACTION_MAP.items():
+                if key in bold:
+                    record['action'] = val
+                    break
+
+        for field in emb.get('fields', []):
+            fname  = field.get('name', '')
+            fvalue = field.get('value', '')
+
+            if fname in ('Information', 'Results'):
+                for line in fvalue.split('\n'):
+                    line = line.strip()
+                    if ': ' in line:
+                        key, _, val = line.partition(': ')
+                        key = key.strip()
+                        val = val.strip()
+                        if key == 'PlayFabID':
+                            record['PlayFabID'] = val
+                        elif key == 'Username':
+                            record['Username'] = val
+                        elif key == 'Reason':
+                            record['Reason'] = val
+                        elif key == 'Duration':
+                            record['Duration'] = val
+
+            elif fname in ('Moderator', 'Referee'):
+                record['ModeratorID'] = fvalue.strip().lstrip('<@').rstrip('>')
+
+    return json.dumps(record, ensure_ascii=False)
+
+
 # ---- Persistent last-used parameters (ban/kick/admin/server/add time) ----
 
 def read_localconfig_lines():
@@ -2178,6 +2853,11 @@ def write_localconfig_lines(lines):
 # 17: last admin message
 # 18: last server message
 # 19: last add-time minutes
+# 20..22: admin message presets (3)
+# 23..25: server message presets (3)
+# 26: console virtual key code
+# 27: discord bot token (for channel scraping)
+# 28: discord channel id (for channel scraping)
 PERSIST_INDEX = {
     'last_ban_reason': 14,
     'last_ban_duration': 15,
@@ -2186,6 +2866,8 @@ PERSIST_INDEX = {
     'last_server_msg': 18,
     'last_add_time': 19,
     'console_vk': 26,
+    'discord_bot_token': 27,
+    'discord_channel_id': 28,
 }
 
 
@@ -2715,6 +3397,13 @@ def main():
         print("[STARTUP] Discord webhook(s) initialized successfully")
     else:
         print("[STARTUP] Discord webhooks not configured or failed to initialize")
+
+    # Check discord logs history file at startup
+    if os.path.exists(DISCORD_LOG_FILE):
+        known_ids = _load_discord_log_ids()
+        print(f"[STARTUP] Discord logs history file found — {len(known_ids)} entries")
+    else:
+        print("[STARTUP] Discord logs history file not found — will be created on first scrape")
 
     window = AdminDashboard()
     window.show()

@@ -237,6 +237,15 @@ def MessageForAdmin(user_id, username, reason, duration_or_msg, category):
             inline=False
         )
 
+    elif category == "warn":
+        embed.color = 0xD4AC0D
+        embed.description = "A **warning** has been issued"
+        embed.add_field(
+            name="Information",
+            value=f"\nPlayFabID: {user_id}\nUsername: {username}\nReason: {reason}",
+            inline=False
+        )
+
     elif category == "ft":
         embed.description = "A **First To match** has been completed"
         embed.add_field(
