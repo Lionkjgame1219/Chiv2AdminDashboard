@@ -312,7 +312,7 @@ def _replace_with_retry(src: str, dst: str, timeout_s: float = 60.0) -> None:
 
 
 def _parse_apply_args(argv):
-    url = target = remote_ver = None
+    url = target = remote_ver = release_tag = None
     passthrough = []
     if "--" in argv:
         i = argv.index("--")
@@ -326,7 +326,9 @@ def _parse_apply_args(argv):
             target = next(it, None)
         elif tok == "--remote-version":
             remote_ver = next(it, None)
-    return url, target, remote_ver, passthrough
+        elif tok == "--release-tag":
+            release_tag = next(it, None)
+    return url, target, remote_ver, release_tag, passthrough
 
 
 def _run_apply_update(
@@ -334,7 +336,9 @@ def _run_apply_update(
     status_callback: Optional[Callable[[str], None]] = None,
     progress_callback: Optional[Callable[[Optional[int]], None]] = None,
 ) -> None:
-    url, target, remote_ver, passthrough = _parse_apply_args(argv)
+    url, target, remote_ver, release_tag, passthrough = _parse_apply_args(argv)
+    # Never carry a stale --post-update flag forward into a relaunch.
+    passthrough = [a for a in passthrough if not a.startswith("--post-update=")]
     if not url or not target:
         return
 
@@ -396,7 +400,11 @@ def _run_apply_update(
     # Launch updated exe.
     try:
         _safe_status(status_callback, "Launching updated version...")
-        subprocess.Popen([target] + passthrough, close_fds=True)
+        launch_args = [target]
+        if release_tag:
+            launch_args.append(f"--post-update={release_tag}")
+        launch_args.extend(passthrough)
+        subprocess.Popen(launch_args, close_fds=True)
         # User requested removing the old version: best-effort cleanup of the backup.
         try:
             if os.path.exists(backup):
@@ -514,8 +522,13 @@ def handle_update_flow(argv=None, status_callback: Optional[Callable[[str], None
         except Exception:
             return False
 
+        # Strip any --post-update=... from our own argv before passing it as
+        # the target's passthrough, so a subsequent update can't re-fire it.
+        clean_argv = [a for a in argv if not a.startswith("--post-update=")]
+
         # IMPORTANT: keep this consistent with the comparison logic above.
         remote_ver_s = remote_id or ""
+        release_tag_s = str(pick.get("release_tag") or "")
         cmd = [
             updater,
             "--apply-update",
@@ -525,8 +538,10 @@ def handle_update_flow(argv=None, status_callback: Optional[Callable[[str], None
             exe_path,
             "--remote-version",
             remote_ver_s,
+            "--release-tag",
+            release_tag_s,
             "--",
-        ] + argv
+        ] + clean_argv
 
         subprocess.Popen(cmd, close_fds=True)
         _safe_status(status_callback, "Update found. Starting updater...")
