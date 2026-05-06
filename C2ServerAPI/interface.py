@@ -2,54 +2,65 @@ import sys
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QDialog,
     QFormLayout, QLineEdit, QDialogButtonBox, QMessageBox, QListWidget, QHBoxLayout,
-    QGroupBox, QSpacerItem, QSizePolicy, QInputDialog, QProgressBar, QCheckBox, QToolTip, QGridLayout
+    QGroupBox, QSpacerItem, QSizePolicy, QInputDialog, QProgressBar, QCheckBox, QToolTip, QGridLayout,
+    QScrollArea, QFrame, QListWidgetItem, QStyledItemDelegate, QStyle
 )
-from PyQt5.QtGui import QFont, QIntValidator, QCursor, QDesktopServices
-from PyQt5.QtCore import Qt, QTimer, QAbstractNativeEventFilter, QAbstractEventDispatcher, QObject, QEvent, QUrl
+from PyQt5.QtGui import QFont, QIntValidator, QCursor, QDesktopServices, QColor, QBrush
+from PyQt5.QtCore import Qt, QTimer, QObject, QEvent, QUrl, pyqtSignal
 
 import pyperclip
 import os
+import json
+import datetime
 import win32gui
 import re
+import threading
 
 
 from core.C2ServerAPIExample import GameChivalry
 import core.wehbooks as wehbooks
-import ctypes
-import ctypes.wintypes as wintypes
 
-WM_CLIPBOARDUPDATE = 0x031D
 
-class MSG(ctypes.Structure):
-    _fields_ = [
-        ("hwnd", wintypes.HWND),
-        ("message", wintypes.UINT),
-        ("wParam", wintypes.WPARAM),
-        ("lParam", wintypes.LPARAM),
-        ("time", wintypes.DWORD),
-        ("pt_x", wintypes.LONG),
-        ("pt_y", wintypes.LONG),
-    ]
+# ═══════════════════════════════════════════════════════════════════════════
+# Design tokens — single source of truth for spacing, radii and accent
+# colours. Kept as module constants (not a separate file by request).
+# ═══════════════════════════════════════════════════════════════════════════
 
-class WinClipboardEventFilter(QAbstractNativeEventFilter):
-    def __init__(self, callback):
-        super().__init__()
-        self._callback = callback
+# Spacing scale. Dialogs should compose these rather than pick arbitrary ints.
+UI_PAD_OUTER   = 18   # outer dialog margin
+UI_PAD_SECTION = 12   # inside group boxes / between sections
+UI_PAD_INNER   = 8    # between adjacent widgets in a row/column
+UI_PAD_TIGHT   = 6    # header rows, badge rows
 
-    def nativeEventFilter(self, eventType, message):
-        try:
-            if eventType != 'windows_generic_MSG':
-                return False, 0
-            msg = MSG.from_address(int(message))
-            if msg.message == WM_CLIPBOARDUPDATE:
-                self._callback()
-        except Exception:
-            pass
-        return False, 0
+UI_SPACING_SECTION = 14   # between top-level sections in a dialog
+UI_SPACING_INNER   = 8    # between adjacent widgets
 
-user32 = ctypes.windll.user32
-user32.AddClipboardFormatListener.argtypes = [wintypes.HWND]
-user32.AddClipboardFormatListener.restype = wintypes.BOOL
+# Corner radii
+UI_RADIUS       = 6
+UI_RADIUS_SMALL = 4
+
+# Accent palette. Kept close to the existing #3d5afe brand colour but nudged
+# slightly calmer so it pairs better with the orange / green action accents.
+UI_ACCENT            = '#4a6cf7'
+UI_ACCENT_HOVER      = '#5a7cff'
+UI_ACCENT_PRESSED    = '#3a5ce0'
+
+# Action accents (reused by _colored_button_qss / sanction cards so the
+# whole app uses one red, one orange, etc.)
+UI_COLOR_BAN    = '#e74c3c'
+UI_COLOR_KICK   = '#f39c12'
+UI_COLOR_WARN   = '#d4ac0d'
+UI_COLOR_UNBAN  = '#2ecc71'
+UI_COLOR_INFO   = '#3498db'
+UI_COLOR_MUTED  = '#95a5a6'
+
+# Status text colours (used by inline setStyleSheet on status labels; kept
+# identical across themes because Qt's palette doesn't cover these semantics
+# and we want success/danger to read the same in light and dark).
+UI_STATUS_OK      = '#27ae60'
+UI_STATUS_WARN    = '#d4901a'
+UI_STATUS_DANGER  = '#c0392b'
+
 
 class InstantToolTipFilter(QObject):
     """Global event filter that shows tooltips after a small delay."""
@@ -102,9 +113,6 @@ class InstantToolTipFilter(QObject):
         except Exception:
             pass
 
-user32.RemoveClipboardFormatListener.argtypes = [wintypes.HWND]
-user32.RemoveClipboardFormatListener.restype = wintypes.BOOL
-
 
 def check_chivalry_window():
     """Check if Chivalry 2 window is available"""
@@ -118,79 +126,71 @@ class ChivalryWaitingDialog(QDialog):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Waiting for Chivalry 2")
-        self.setFixedSize(500, 350)
+        self.setFixedSize(520, 360)
 
         layout = QVBoxLayout()
-        layout.setSpacing(5)
-        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(UI_SPACING_INNER)
+        layout.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
 
         title = QLabel("Waiting for Chivalry 2")
-        title.setFont(QFont("Arial", 18, QFont.Bold))
+        title.setFont(QFont("Segoe UI", 18, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
-        title.setContentsMargins(0, 0, 0, 5)
         layout.addWidget(title)
 
-        instructions = QLabel()
-        instructions.setText(
-            "Please launch your Chivalry 2 game.\n\n"
+        instructions = QLabel(
+            "Please launch your Chivalry 2 game.\n"
             "The admin tool will automatically continue once the game is detected."
         )
         instructions.setWordWrap(True)
         instructions.setAlignment(Qt.AlignCenter)
-        instructions.setContentsMargins(10, 5, 10, 5)
-        instructions.setMinimumHeight(80)
-        instructions.setMaximumHeight(80)
-        instructions.setSizePolicy(instructions.sizePolicy().horizontalPolicy(), instructions.sizePolicy().Fixed)
         layout.addWidget(instructions)
+
+        layout.addSpacing(UI_PAD_TIGHT)
 
         self.status_label = QLabel("Searching for Chivalry 2 window...")
         self.status_label.setAlignment(Qt.AlignCenter)
-
-        font = QFont("Segoe UI", 12)
-        font.setBold(True)
-        self.status_label.setFont(font)
-
-        self.status_label.setContentsMargins(10, 5, 10, 5)
-
+        self.status_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
         layout.addWidget(self.status_label)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 0)
-        self.progress_bar.setMinimumHeight(25)
-        self.progress_bar.setStyleSheet("margin: 10px 0px;")
+        self.progress_bar.setMinimumHeight(22)
+        self.progress_bar.setTextVisible(False)
         layout.addWidget(self.progress_bar)
 
-        layout.addSpacing(5)
+        layout.addSpacing(UI_PAD_TIGHT)
 
         button_layout = QHBoxLayout()
+        button_layout.setSpacing(UI_SPACING_INNER)
 
         self.theme_button = QPushButton("Dark Mode")
         self.theme_button.clicked.connect(self.toggle_theme)
-        self.theme_button.setMinimumHeight(35)
+        self.theme_button.setMinimumHeight(34)
         button_layout.addWidget(self.theme_button)
 
         skip_button = QPushButton("Skip Waiting (Continue Anyway)")
         skip_button.clicked.connect(self.accept)
-        skip_button.setMinimumHeight(35)
-        button_layout.addWidget(skip_button)
+        skip_button.setMinimumHeight(34)
+        button_layout.addWidget(skip_button, 1)
 
         layout.addLayout(button_layout)
 
         launch_layout = QHBoxLayout()
+        launch_layout.setSpacing(UI_SPACING_INNER)
 
         steam_button = QPushButton("Launch via Steam")
         steam_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("steam://rungameid/1824220")))
-        steam_button.setMinimumHeight(35)
+        steam_button.setMinimumHeight(34)
         launch_layout.addWidget(steam_button)
 
         epic_button = QPushButton("Launch via Epic Games")
         epic_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("com.epicgames.launcher://apps/bd46d4ce259349e5bd8b3ded20274737%3A4c4a6c0767304c9d830f3f36f2b29018%3APeppermint?action=launch&silent=true")))
-        epic_button.setMinimumHeight(35)
+        epic_button.setMinimumHeight(34)
         launch_layout.addWidget(epic_button)
 
         xbox_button = QPushButton("Launch via Xbox")
         xbox_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("msxbox://game/?productId=9N7CJX93ZGWN")))
-        xbox_button.setMinimumHeight(35)
+        xbox_button.setMinimumHeight(34)
         launch_layout.addWidget(xbox_button)
 
         layout.addLayout(launch_layout)
@@ -205,6 +205,11 @@ class ChivalryWaitingDialog(QDialog):
         self.timer.start(1000)
 
         self.update_theme_button()
+
+        # Use the time the user spends waiting for Chivalry to launch to
+        # parse the discord log into the in-memory cache off the UI thread.
+        # By the time the dashboard opens, cache hits are essentially free.
+        _warm_log_cache_async()
 
     def closeEvent(self, event):
         """Handle window close button"""
@@ -247,7 +252,7 @@ class ChivalryWaitingDialog(QDialog):
 
         if check_chivalry_window():
             self.status_label.setText("Chivalry 2 window Detected.")
-            self.status_label.setStyleSheet("font-weight: bold; color: green;")
+            self.status_label.setStyleSheet(f"font-weight: bold; color: {UI_STATUS_OK};")
             self.timer.stop()
             QTimer.singleShot(1500, self.accept)
         else:
@@ -287,11 +292,143 @@ def parse_player_list_from_clipboard(text: str = None):
 
     return players
 
+
+def _make_tip_badge(tooltip_text: str, parent=None) -> QLabel:
+    """Standard '?' tooltip badge used across the dashboard.
+
+    Uses palette roles so it follows the active theme without
+    per-theme restyling on toggle.
+    """
+    lbl = QLabel("?", parent)
+    lbl.setToolTip(tooltip_text)
+    lbl.setFixedSize(20, 20)
+    lbl.setAlignment(Qt.AlignCenter)
+    lbl.setStyleSheet(
+        "QLabel { color: #888888; font-weight: bold;"
+        " border: 1px solid #888888; border-radius: 10px; }"
+    )
+    return lbl
+
+
+def _make_preset_column(slot_idx: int, on_load, on_save, on_clear) -> QVBoxLayout:
+    """Build one Load/Save/Clear stack for a numbered preset slot.
+
+    Returns a QVBoxLayout with the three buttons attached as
+    _btn_load / _btn_save / _btn_clear so the caller can keep
+    references for later restyling.
+    """
+    col = QVBoxLayout()
+    col.setSpacing(6)
+    col.addWidget(QLabel(f"Slot {slot_idx}"), 0)
+
+    btn_load = QPushButton("Load")
+    btn_load.setMinimumWidth(90)
+    btn_load.clicked.connect(lambda _, s=slot_idx: on_load(s))
+    col.addWidget(btn_load)
+
+    btn_save = QPushButton("Save / Overwrite")
+    btn_save.setMinimumWidth(90)
+    btn_save.clicked.connect(lambda _, s=slot_idx: on_save(s))
+    col.addWidget(btn_save)
+
+    btn_clear = QPushButton("Clear")
+    btn_clear.setMinimumWidth(90)
+    btn_clear.clicked.connect(lambda _, s=slot_idx: on_clear(s))
+    col.addWidget(btn_clear)
+
+    col._btn_load = btn_load
+    col._btn_save = btn_save
+    col._btn_clear = btn_clear
+    return col
+
+
+class _SanctionedRowDelegate(QStyledItemDelegate):
+    """Honors per-item background / foreground brushes set via
+    QListWidgetItem.setBackground / setForeground, even when a global
+    stylesheet targets QListWidget::item.
+
+    Qt 5 suppresses data-role colours as soon as ANY ::item rule exists
+    in a stylesheet, and its default paint path also overrides them on
+    hover/selection with the theme's :hover / :selected colours. This
+    delegate paints the background manually, overlays a translucent
+    black to darken on hover/selection (theme-independent), strips
+    those state flags from the option so super() can't repaint over
+    our work, and forces the foreground through option.palette.
+    """
+    def paint(self, painter, option, index):
+        bg = index.data(Qt.BackgroundRole)
+        fg = index.data(Qt.ForegroundRole)
+
+        if isinstance(bg, QBrush) and bg.style() != Qt.NoBrush:
+            painter.fillRect(option.rect, bg)
+            if option.state & QStyle.State_Selected:
+                painter.fillRect(option.rect, QColor(0, 0, 0, 70))
+            elif option.state & QStyle.State_MouseOver:
+                painter.fillRect(option.rect, QColor(0, 0, 0, 40))
+            # Strip hover/selection flags so the default paint path
+            # can't redraw the theme's blue selection or grey hover
+            # on top of our overlay.
+            option.state &= ~QStyle.State_Selected
+            option.state &= ~QStyle.State_MouseOver
+            option.backgroundBrush = QBrush()
+
+        if isinstance(fg, QBrush):
+            option.palette.setBrush(option.palette.Text, fg)
+            option.palette.setBrush(option.palette.HighlightedText, fg)
+
+        super().paint(painter, option, index)
+
+
+def _colored_button_qss(color: str) -> str:
+    """QSS for a solid coloured QPushButton with matching hover/pressed shades.
+
+    `color` is a #rrggbb hex. Hover darkens ~15%, pressed ~30%.
+    Avoids the #rrggbbaa (alpha) trick which renders semi-transparent
+    and composites oddly against the parent dialog in Qt 5, and ensures
+    hover doesn't fall back to the theme's generic grey.
+    """
+    def _shade(factor: float) -> str:
+        h = color.lstrip('#')
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"#{int(r*factor):02x}{int(g*factor):02x}{int(b*factor):02x}"
+    return (
+        f"QPushButton {{ background-color:{color}; color:white;"
+        f" font-weight:bold; border-radius:4px; }}"
+        f"QPushButton:hover   {{ background-color:{_shade(0.85)}; }}"
+        f"QPushButton:pressed {{ background-color:{_shade(0.70)}; }}"
+    )
+
+
+def _populated_preset_qss(is_dark_theme: bool) -> str:
+    """QSS applied to Load preset buttons whose slot has stored content.
+
+    Subtle green tint with a matching hover shade — ensures hover doesn't
+    fall back to the theme's generic grey, which looked wrong against
+    the green normal state.
+    """
+    if is_dark_theme:
+        return (
+            "QPushButton { background-color: #2d5a2d; color: #ffffff; }"
+            "QPushButton:hover { background-color: #3a6f3a; }"
+        )
+    return (
+        "QPushButton { background-color: #e6ffe6; color: #333333; }"
+        "QPushButton:hover { background-color: #d3f0d3; }"
+    )
+
+
 class ActionForm(QDialog):
+
+    _notify_in_game_last = True
+
+    @staticmethod
+    def _remember_notify_in_game(checked: bool) -> None:
+        ActionForm._notify_in_game_last = bool(checked)
+
     def __init__(self, action_name, player_id, player_name, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"{action_name} Player")
-        self.resize(450, 350)
+        self.resize(480, 420)
         self.setModal(True)
         self.setWindowModality(Qt.WindowModal)
 
@@ -302,8 +439,15 @@ class ActionForm(QDialog):
             print(f"[ACTION FORM] Could not connect to Chivalry 2: {e}")
 
         main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
+        main_layout.setSpacing(UI_SPACING_SECTION)
 
         form_layout = QFormLayout()
+        form_layout.setLabelAlignment(Qt.AlignRight)
+        form_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form_layout.setHorizontalSpacing(UI_SPACING_INNER)
+        form_layout.setVerticalSpacing(UI_PAD_TIGHT)
         self.player_id_input = QLineEdit(player_id)
         self.player_id_input.setReadOnly(True)
         self.player_name = QLineEdit(player_name)
@@ -312,6 +456,7 @@ class ActionForm(QDialog):
         form_layout.addRow("Player Name:", self.player_name)
         default_reason_key = 'last_ban_reason' if action_name.lower() == 'ban' else 'last_kick_reason'
         self.reason_input = QLineEdit(get_persisted_value(default_reason_key, ""))
+        self.reason_input.setPlaceholderText("Describe the reason for this action")
         form_layout.addRow("Reason:", self.reason_input)
 
         if action_name.lower() == "ban":
@@ -326,20 +471,22 @@ class ActionForm(QDialog):
         if action_name.lower() == "ban":
             quick_preset_group = QGroupBox("Quick Presets")
             quick_preset_layout = QHBoxLayout()
+            quick_preset_layout.setContentsMargins(UI_PAD_SECTION, UI_PAD_TIGHT, UI_PAD_SECTION, UI_PAD_TIGHT)
+            quick_preset_layout.setSpacing(UI_SPACING_INNER)
 
             btn_ffa_24h = QPushButton("FFA 24h")
             btn_ffa_24h.clicked.connect(self.apply_ffa_24h_preset)
-            btn_ffa_24h.setStyleSheet("background-color: #3498db; color: white; font-weight: bold; padding: 8px;")
+            btn_ffa_24h.setStyleSheet(_colored_button_qss(UI_COLOR_INFO))
             quick_preset_layout.addWidget(btn_ffa_24h)
 
             btn_ffa_perma = QPushButton("FFA Permaban")
             btn_ffa_perma.clicked.connect(self.apply_ffa_perma_preset)
-            btn_ffa_perma.setStyleSheet("background-color: #e67e22; color: white; font-weight: bold; padding: 8px;")
+            btn_ffa_perma.setStyleSheet(_colored_button_qss('#e67e22'))
             quick_preset_layout.addWidget(btn_ffa_perma)
 
             btn_cheating = QPushButton("Cheating")
             btn_cheating.clicked.connect(self.apply_cheating_preset)
-            btn_cheating.setStyleSheet("background-color: #e74c3c; color: white; font-weight: bold; padding: 8px;")
+            btn_cheating.setStyleSheet(_colored_button_qss(UI_COLOR_BAN))
             quick_preset_layout.addWidget(btn_cheating)
 
             quick_preset_group.setLayout(quick_preset_layout)
@@ -347,18 +494,27 @@ class ActionForm(QDialog):
 
         preset_group = QGroupBox("Reason Presets")
         preset_layout = QVBoxLayout()
+        preset_layout.setContentsMargins(UI_PAD_SECTION, UI_PAD_TIGHT, UI_PAD_SECTION, UI_PAD_SECTION)
+        preset_layout.setSpacing(UI_PAD_TIGHT)
 
         is_ban = (action_name.lower() == "ban")
         self.preset_slots = list(range(0, 5)) if is_ban else list(range(5, 10))
 
-        tip_icon = QLabel("Tip")
-        tip_icon.setToolTip("You can hover a loading button to preview the saved reason" + (" and duration" if is_ban else ""))
-        tip_icon.setFixedSize(30, 20)
-        tip_icon.setAlignment(Qt.AlignCenter)
-        tip_icon.setStyleSheet("QLabel { color: #888888; font-weight: bold; border: 1px solid #888888; border-radius: 8px; }")
-        preset_layout.addWidget(tip_icon, 0, Qt.AlignRight)
+        preset_layout.addWidget(
+            _make_tip_badge("Hover a Load button to preview the saved reason"
+                            + (" and duration" if is_ban else "")),
+            0, Qt.AlignRight,
+        )
+
+        def _preset_row_label(text):
+            lbl = QLabel(text)
+            lbl.setProperty("role", "key")
+            f = QFont('Segoe UI', 8, QFont.DemiBold)
+            lbl.setFont(f)
+            return lbl
 
         load_layout1 = QHBoxLayout()
+        load_layout1.setSpacing(UI_PAD_TIGHT)
         self.load_buttons = []
         for idx, slot in enumerate(self.preset_slots):
             btn = QPushButton(f"Slot {idx}")
@@ -367,10 +523,11 @@ class ActionForm(QDialog):
             self.load_buttons.append(btn)
             load_layout1.addWidget(btn)
 
-        preset_layout.addWidget(QLabel(("Load Presets:" if is_ban else "Load Presets:")))
+        preset_layout.addWidget(_preset_row_label("Load presets"))
         preset_layout.addLayout(load_layout1)
 
         save_layout1 = QHBoxLayout()
+        save_layout1.setSpacing(UI_PAD_TIGHT)
         self.save_buttons = []
         for idx, slot in enumerate(self.preset_slots):
             btn = QPushButton(f"Slot {idx}")
@@ -379,10 +536,11 @@ class ActionForm(QDialog):
             self.save_buttons.append(btn)
             save_layout1.addWidget(btn)
 
-        preset_layout.addWidget(QLabel(("Save / Overwrite Presets:" if is_ban else "Save / Overwrite Presets:")))
+        preset_layout.addWidget(_preset_row_label("Save / overwrite"))
         preset_layout.addLayout(save_layout1)
 
         clear_layout1 = QHBoxLayout()
+        clear_layout1.setSpacing(UI_PAD_TIGHT)
         self.clear_buttons = []
         for idx, slot in enumerate(self.preset_slots):
             btn = QPushButton("Clear")
@@ -391,15 +549,21 @@ class ActionForm(QDialog):
             self.clear_buttons.append(btn)
             clear_layout1.addWidget(btn)
 
-        preset_layout.addWidget(QLabel(("Clear Presets:" if is_ban else "Clear Presets:")))
+        preset_layout.addWidget(_preset_row_label("Clear"))
         preset_layout.addLayout(clear_layout1)
 
         preset_group.setLayout(preset_layout)
         main_layout.addWidget(preset_group)
 
-        self.notify_in_game = QCheckBox("Notify in-game")
-        self.notify_in_game.setChecked(True)
-        main_layout.addWidget(self.notify_in_game)
+        # Warnings are Discord-only, so the in-game toggle is irrelevant
+        # for them — hide the checkbox entirely in that case.
+        if action_name.lower() != "warn":
+            self.notify_in_game = QCheckBox("Notify in-game")
+            self.notify_in_game.setChecked(ActionForm._notify_in_game_last)
+            self.notify_in_game.toggled.connect(ActionForm._remember_notify_in_game)
+            main_layout.addWidget(self.notify_in_game)
+        else:
+            self.notify_in_game = None
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.perform_action)
@@ -506,10 +670,7 @@ class ActionForm(QDialog):
                     tooltip_text += f"  |  duration: {duration_val}"
                 btn.setToolTip(tooltip_text)
 
-                if is_dark_theme:
-                    btn.setStyleSheet("QPushButton { background-color: #2d5a2d; color: #ffffff; }")
-                else:
-                    btn.setStyleSheet("QPushButton { background-color: #e6ffe6; color: #333333; }")
+                btn.setStyleSheet(_populated_preset_qss(is_dark_theme))
             else:
                 btn.setToolTip(f"Slot {idx}: Empty")
                 btn.setStyleSheet("")
@@ -538,105 +699,441 @@ class ActionForm(QDialog):
                 QMessageBox.warning(self, "Error", "Please enter a valid number for time.")
                 return
             time_hour = int(time_str)
-            print(f"[{self.action_name.upper()}] Player ID={player_id}, Reason={reason}, Time={time_hour} hours")
+            print(f"[BAN] Player ID={player_id}, Reason={reason}, Time={time_hour} hours")
 
-            # Try to execute the ban command if game is connected
             action_executed = False
             if hasattr(self.game, 'banbyid'):
                 try:
                     self.game.banbyid(player_id, time_hour, reason)
                     action_executed = True
-                    if self.notify_in_game.isChecked():
+                    if self.notify_in_game is not None and self.notify_in_game.isChecked():
                         self.game.AdminSay(f"{player_name} has been banned from the server.")
                 except Exception as e:
                     QMessageBox.warning(self, "Game Connection Error", f"Could not execute ban command:\n{str(e)}")
 
-            # Only send Discord notification if the action was actually executed
             if action_executed:
-                # Persist last-used values for bans
                 set_persisted_value('last_ban_reason', reason)
                 set_persisted_value('last_ban_duration', str(time_hour))
                 wehbooks.MessageForAdmin(player_id, player_name, reason, time_hour, "ban")
-        else:
-            print(f"[{self.action_name.upper()}] Player ID={player_id}, Reason={reason}")
+                _schedule_silent_discord_scrape(self)
 
-            # Try to execute the kick command if game is connected
+        elif self.action_name.lower() == "warn":
+            print(f"[WARN] Player ID={player_id}, Reason={reason}")
+            # Warning is Discord-only — no in-game command needed
+            wehbooks.MessageForAdmin(player_id, player_name, reason, None, "warn")
+            set_persisted_value('last_kick_reason', reason)
+            _schedule_silent_discord_scrape(self)
+
+        else:
+            print(f"[KICK] Player ID={player_id}, Reason={reason}")
+
             action_executed = False
             if hasattr(self.game, 'kickbyid'):
                 try:
                     self.game.kickbyid(player_id, reason)
                     action_executed = True
-                    if self.notify_in_game.isChecked():
+                    if self.notify_in_game is not None and self.notify_in_game.isChecked():
                         self.game.AdminSay(f"{player_name} has been kicked from the server.")
                 except Exception as e:
                     QMessageBox.warning(self, "Game Connection Error", f"Could not execute kick command:\n{str(e)}")
 
-            # Only send Discord notification if the action was actually executed
             if action_executed:
                 set_persisted_value('last_kick_reason', reason)
                 wehbooks.MessageForAdmin(player_id, player_name, reason, None, "kick")
+                _schedule_silent_discord_scrape(self)
 
         self.accept()
 
-    def toggle_theme(self):
-        """Toggle between dark and light theme"""
-        app = QApplication.instance()
-        current_is_dark = load_theme_preference()
-        new_is_dark = not current_is_dark
+def _load_all_sanctions() -> list:
+    """Return every record from discordlogshistory, oldest-first.
 
-        # Apply new theme
-        if new_is_dark:
-            apply_dark_theme(app)
+    Backed by the in-memory cache; the returned list is the cache's own
+    storage, so callers must treat it as read-only.
+    """
+    return _read_log_cached()[1]
+
+
+def _load_sanctions_for_player(player_id: str) -> list:
+    """Return all discordlogshistory records whose PlayFabID matches player_id."""
+    if not player_id:
+        return []
+    _, _, _, by_pid = _read_log_cached()
+    return list(by_pid.get(player_id.upper(), ()))
+
+
+def _compute_all_player_statuses() -> dict:
+    """Single-pass scan of discordlogshistory.
+
+    Returns {playfab_id_upper: 'banned' | 'cautioned'} for players whose
+    most severe current status is non-None. 'banned' wins over 'cautioned'.
+
+    An unban record lifts any earlier ban: a player counts as banned only
+    if they have a currently-active ban whose timestamp is later than the
+    most recent unban for that same PlayFabID.
+    """
+    now           = datetime.datetime.now(datetime.timezone.utc)
+    one_week_ago  = now - datetime.timedelta(days=7)
+    one_month_ago = now - datetime.timedelta(days=30)
+    latest_active_ban = {}   # pid -> latest ts of a still-active ban
+    latest_unban      = {}   # pid -> latest unban ts
+    kicked            = set()
+    cautioned         = set()
+
+    for record in _load_all_sanctions():
+        pid = record.get('PlayFabID', '').upper()
+        if not pid:
+            continue
+        action = record.get('action', '')
+        ts_raw = record.get('timestamp', '')
+        if not ts_raw:
+            continue
+        try:
+            ts = datetime.datetime.fromisoformat(ts_raw.replace('Z', '+00:00'))
+        except Exception:
+            continue
+
+        if action == 'ban':
+            dur = record.get('Duration', '') or ''
+            if dur:
+                try:
+                    # Tolerant of "24h", "24 hours", " 24 ", "24hh" etc.
+                    m = re.search(r'-?\d+(?:\.\d+)?', str(dur))
+                    if m:
+                        hours = float(m.group(0))
+                        if ts + datetime.timedelta(hours=hours) > now:
+                            prev = latest_active_ban.get(pid)
+                            if prev is None or ts > prev:
+                                latest_active_ban[pid] = ts
+                except Exception:
+                    pass
+        elif action == 'unban':
+            prev = latest_unban.get(pid)
+            if prev is None or ts > prev:
+                latest_unban[pid] = ts
+        elif action in ('kick') and ts >= one_week_ago:
+            kicked.add(pid)
+        elif action in ('warn') and ts >= one_month_ago:
+            cautioned.add(pid)
+
+    banned = {
+        pid for pid, ban_ts in latest_active_ban.items()
+        if pid not in latest_unban or latest_unban[pid] < ban_ts
+    }
+
+    return {**{p: 'cautioned' for p in cautioned}, **{p: 'banned' for p in banned}}
+
+
+class _ThemeBus(QObject):
+    """Broadcasts theme toggles to live theme-aware widgets.
+
+    Subscribers connect to `theme_changed` on construction and
+    disconnect on destruction. Used by sanction cards so they
+    re-tint without needing to be rebuilt.
+    """
+    theme_changed = pyqtSignal(bool)  # True = dark, False = light
+
+
+_theme_bus = _ThemeBus()
+
+
+def _format_sanction_timestamp(ts_raw: str) -> tuple:
+    """Format an ISO-8601 UTC timestamp for display in a sanction card.
+
+    Returns (display, tooltip):
+      - display: 'YYYY-MM-DD  HH:MM TZ' in the viewer's local timezone,
+        where TZ is the OS-reported abbreviation (Windows often returns
+        long names like 'Eastern Standard Time' — those are condensed to
+        their initials, e.g. 'EST'). Falls back to a 'UTC±HH:MM' offset
+        when no name is available.
+      - tooltip: the original UTC timestamp, so reviewers can cross-
+        reference against logs that record times in UTC.
+
+    On parse failure both values fall back to the raw input.
+    """
+    if not ts_raw:
+        return '', ''
+    try:
+        dt_utc = datetime.datetime.fromisoformat(ts_raw.replace('Z', '+00:00'))
+        dt_local = dt_utc.astimezone()
+        tz_name = dt_local.strftime('%Z') or ''
+        if tz_name and ' ' in tz_name:
+            initials = ''.join(w[0] for w in tz_name.split() if w[:1].isupper())
+            tz_label = initials or tz_name
         else:
-            apply_light_theme(app)
+            tz_label = tz_name
+        if not tz_label:
+            offset = dt_local.utcoffset() or datetime.timedelta(0)
+            total_min = int(offset.total_seconds() // 60)
+            sign = '+' if total_min >= 0 else '-'
+            hh, mm = divmod(abs(total_min), 60)
+            tz_label = f'UTC{sign}{hh:02d}:{mm:02d}'
+        display = f"{dt_local.strftime('%Y-%m-%d')}  {dt_local.strftime('%H:%M')} {tz_label}"
+        tooltip = f"{dt_utc.strftime('%Y-%m-%d %H:%M')} UTC"
+        return display, tooltip
+    except Exception:
+        fallback = ts_raw[:10] + '  ' + ts_raw[11:16] + ' UTC' if len(ts_raw) >= 16 else ts_raw
+        return fallback, ts_raw
 
-        # Save preference
-        save_theme_preference(new_is_dark)
 
-        # Update preset button colors
-        self.update_preset_tooltips()
+def _build_sanction_card(record: dict, is_dark: bool = None,
+                         embed_playfabid: bool = False) -> QFrame:
+    """Card representing one sanction record.
 
-        # Force refresh of this dialog's appearance
-        self.style().unpolish(self)
-        self.style().polish(self)
-        self.update()
+    Visual language matches the app's QGroupBox containers: themed
+    base background, subtle border, 8px radius. The action type is
+    communicated through a small coloured badge in the header, with
+    the username promoted alongside it so the card scans at a glance.
+
+    Pass `is_dark` to avoid repeated theme-preference reads when
+    building many cards in a row. Pass `embed_playfabid=True` to
+    include a PlayFabID row inside the card - used by the sanction
+    search dialog where cards appear without a per-player header.
+
+    Live theme updates: each card subscribes to `_theme_bus.theme_changed`
+    and re-applies its themed stylesheet in place. The subscription is
+    torn down when the frame is destroyed, so closed dialogs don't leak.
+    """
+    if is_dark is None:
+        is_dark = load_theme_preference()
+
+    action   = record.get('action',   '')
+    duration = record.get('Duration', '')
+    reason   = record.get('Reason',   '')
+    username = record.get('Username', '')
+
+    # Action -> label + badge colour. Legacy records without an 'action'
+    # key are inferred from which fields are populated.
+    if action == 'ban'   or (not action and duration):
+        action_label, accent = 'BAN',     UI_COLOR_BAN
+    elif action == 'kick' or (not action and reason and username):
+        action_label, accent = 'KICK',    UI_COLOR_KICK
+    elif action == 'warn':
+        action_label, accent = 'WARNING', UI_COLOR_WARN
+    elif action == 'unban' or (not action and not reason):
+        action_label, accent = 'UNBAN',   UI_COLOR_UNBAN
+    else:
+        action_label, accent = (action.upper() or '?'), UI_COLOR_MUTED
+
+    ts_raw = record.get('timestamp', '')
+    ts, ts_tooltip = _format_sanction_timestamp(ts_raw)
+
+    frame = QFrame()
+    frame.setObjectName("SanctionCard")
+
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(12, 9, 12, 9)
+    layout.setSpacing(5)
+
+    # -- Header: badge + username + timestamp -----------------------------
+    header = QHBoxLayout()
+    header.setSpacing(8)
+
+    badge = QLabel(action_label)
+    badge.setFont(QFont('Segoe UI', 8, QFont.Bold))
+    badge.setStyleSheet(
+        f"QLabel {{ color: white; background-color: {accent};"
+        f" border-radius: 3px; padding: 2px 8px; }}"
+    )
+    header.addWidget(badge)
+
+    if username:
+        lbl_user = QLabel(username)
+        lbl_user.setFont(QFont('Segoe UI', 9, QFont.Bold))
+        lbl_user.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        header.addWidget(lbl_user)
+
+    header.addStretch()
+    lbl_ts = QLabel(ts)
+    lbl_ts.setFont(QFont('Segoe UI', 8))
+    if ts_tooltip:
+        lbl_ts.setToolTip(ts_tooltip)
+    header.addWidget(lbl_ts)
+    layout.addLayout(header)
+
+    # -- Theme-dependent styling (re-applicable) --------------------------
+    def _apply_theme(dark: bool):
+        if dark:
+            bg, border, muted, key_col = '#353535', '#555555', '#aaaaaa', '#b5b5b5'
+        else:
+            bg, border, muted, key_col = '#ffffff', '#cccccc', '#888888', '#777777'
+        frame.setStyleSheet(f"""
+            QFrame#SanctionCard {{
+                background-color: {bg};
+                border: 1px solid {border};
+                border-radius: 8px;
+            }}
+            QFrame#SanctionCard QLabel {{
+                background-color: transparent;
+                border: none;
+            }}
+            QFrame#SanctionCard QLabel[role="key"] {{
+                color: {key_col};
+            }}
+        """)
+        lbl_ts.setStyleSheet(f"color: {muted}; font-size: 8pt;")
+
+    _apply_theme(is_dark)
+    _theme_bus.theme_changed.connect(_apply_theme)
+
+    # Closures hold strong refs through the signal connection; release
+    # them when the frame dies so sanction dialogs don't leak cards.
+    def _cleanup():
+        try:
+            _theme_bus.theme_changed.disconnect(_apply_theme)
+        except (TypeError, RuntimeError):
+            pass
+    frame.destroyed.connect(_cleanup)
+
+    def _add_row(label_text: str, value: str):
+        if not value:
+            return
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        key = QLabel(label_text.upper())
+        key.setProperty("role", "key")
+        key.setFont(QFont('Segoe UI', 7, QFont.Bold))
+        key.setFixedWidth(66)
+        key.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        val = QLabel(value)
+        val.setWordWrap(True)
+        val.setFont(QFont('Segoe UI', 8))
+        val.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        row.addWidget(key)
+        row.addWidget(val, 1)
+        layout.addLayout(row)
+
+    # Username is rendered in the header; no longer a body row.
+    if embed_playfabid:
+        _add_row('PlayFabID', record.get('PlayFabID', ''))
+    _add_row('Reason',   reason)
+    _add_row('Duration', duration)
+
+    mod_id = record.get('ModeratorID', '')
+    if mod_id:
+        mod_name = record.get('ModeratorName', '')
+        _add_row('Moderator', f'{mod_id} ({mod_name})' if mod_name else mod_id)
+
+    return frame
+
 
 class PlayerActionDialog(QDialog):
     def __init__(self, player_id, player_name, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Actions for {player_name} (ID: {player_id})")
-        self.resize(380, 150)
+        self.resize(860, 500)
         self.setModal(True)
         self.setWindowModality(Qt.WindowModal)
         self.player_id = player_id
         self.player_name = player_name
-        layout = QVBoxLayout()
-        label = QLabel(f"Choose an action for player <b>{player_name}</b> (ID: {player_id}):")
+
+        root = QHBoxLayout(self)
+        root.setSpacing(UI_SPACING_SECTION)
+        root.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
+
+        # ── Left: Actions group ───────────────────────────────────────
+        actions_group = QGroupBox("Actions")
+        left = QVBoxLayout(actions_group)
+        left.setSpacing(UI_PAD_INNER)
+        left.setContentsMargins(UI_PAD_SECTION, UI_PAD_SECTION, UI_PAD_SECTION, UI_PAD_SECTION)
+
+        label = QLabel(
+            f"<div align='center'><b>{player_name}</b>"
+            f"<br/><small style='color:gray;'>{player_id}</small></div>"
+        )
         label.setWordWrap(True)
         label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(label)
-        btn_ban = QPushButton("Ban")
-        btn_ban.setStyleSheet("background-color:#e74c3c; color: white; font-weight: bold;")
-        btn_ban.clicked.connect(self.ban_player)
-        layout.addWidget(btn_ban)
-        btn_kick = QPushButton("Kick")
-        btn_kick.setStyleSheet("background-color:#f39c12; color: white; font-weight: bold;")
-        btn_kick.clicked.connect(self.kick_player)
-        layout.addWidget(btn_kick)
+        label.setMinimumHeight(44)
+        left.addWidget(label)
+        left.addSpacing(UI_PAD_INNER)
 
-        # Player profile button
-        btn_profile = QPushButton("Chivalry2Stats player profile")
-        btn_profile.setStyleSheet("background-color:#3498db; color: white; font-weight: bold;")
-        btn_profile.clicked.connect(self.open_player_profile)
-        layout.addWidget(btn_profile)
+        def _action_btn(text, color, slot):
+            b = QPushButton(text)
+            b.setMinimumHeight(48)
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            f = b.font()
+            f.setPointSize(max(f.pointSize(), 10))
+            f.setBold(True)
+            b.setFont(f)
+            b.setStyleSheet(_colored_button_qss(color))
+            b.clicked.connect(slot)
+            return b
 
-        # Copy player ID button
-        btn_copy_id = QPushButton("Copy Player's PlayFabID")
-        btn_copy_id.setStyleSheet("background-color:#2ecc71; color: white; font-weight: bold;")
-        btn_copy_id.clicked.connect(self.copy_player_id)
-        layout.addWidget(btn_copy_id)
+        # No trailing stretch — buttons share all remaining vertical space
+        # equally so the column never leaves a dead zone at the bottom.
+        left.addWidget(_action_btn("Ban",                    UI_COLOR_BAN,   self.ban_player),          1)
+        left.addWidget(_action_btn("Kick",                   UI_COLOR_KICK,  self.kick_player),         1)
+        left.addWidget(_action_btn("Warn",                   UI_COLOR_WARN,  self.warn_player),         1)
+        left.addWidget(_action_btn("Chivalry2Stats Profile", UI_COLOR_INFO,  self.open_player_profile), 1)
+        left.addWidget(_action_btn("Copy PlayFabID",         UI_COLOR_UNBAN, self.copy_player_id),      1)
 
-        self.setLayout(layout)
+        actions_group.setFixedWidth(250)
+        root.addWidget(actions_group)
+
+        # ── Right: sanction history ──────────────────────────────────
+        sanctions = _load_sanctions_for_player(player_id)
+        now       = datetime.datetime.now(datetime.timezone.utc)
+        month_ago = now - datetime.timedelta(days=30)
+
+        # Most-recent warn, only kept if issued within 30 days
+        pinned_warning = None
+        for record in reversed(sanctions):
+            if record.get('action') == 'warn':
+                try:
+                    ts = datetime.datetime.fromisoformat(
+                        record['timestamp'].replace('Z', '+00:00'))
+                    if ts >= month_ago:
+                        pinned_warning = record
+                except Exception:
+                    pass
+                break
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(UI_SPACING_INNER)
+
+        is_dark = load_theme_preference()
+
+        if pinned_warning:
+            pin_group = QGroupBox("Active Warning (within the last 30 days)")
+            pin_layout = QVBoxLayout(pin_group)
+            pin_layout.setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
+            pin_layout.addWidget(_build_sanction_card(pinned_warning, is_dark))
+            right_col.addWidget(pin_group)
+
+        count = len(sanctions)
+        history_group = QGroupBox(
+            f"Sanction History — {count} record{'s' if count != 1 else ''}"
+        )
+        hist_layout = QVBoxLayout(history_group)
+        hist_layout.setContentsMargins(UI_PAD_INNER, UI_PAD_INNER, UI_PAD_INNER, UI_PAD_INNER)
+
+        pinned_id  = pinned_warning.get('id') if pinned_warning else None
+        scrollable = [r for r in reversed(sanctions) if r.get('id') != pinned_id]
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        scroll_content = QWidget()
+        scroll_layout  = QVBoxLayout(scroll_content)
+        scroll_layout.setSpacing(UI_PAD_TIGHT)
+        scroll_layout.setContentsMargins(2, 2, 2, 2)
+
+        if scrollable:
+            for record in scrollable:
+                scroll_layout.addWidget(_build_sanction_card(record, is_dark))
+        elif not pinned_warning:
+            empty = QLabel("No sanctions found in log history.")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setStyleSheet("color: gray; font-style: italic; padding: 28px;")
+            scroll_layout.addWidget(empty)
+
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        hist_layout.addWidget(scroll)
+
+        right_col.addWidget(history_group, 1)
+        root.addLayout(right_col, 1)
 
     def copy_player_id(self):
         pyperclip.copy(self.player_id)
@@ -648,6 +1145,10 @@ class PlayerActionDialog(QDialog):
 
     def kick_player(self):
         form = ActionForm("Kick", self.player_id, self.player_name, parent=self)
+        form.exec_()
+
+    def warn_player(self):
+        form = ActionForm("Warn", self.player_id, self.player_name, parent=self)
         form.exec_()
 
     def open_player_profile(self):
@@ -670,60 +1171,50 @@ class PlayersWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Players List")
-        self.resize(600, 800)
+        self.resize(640, 820)
 
         self.game = None
         try:
             self.game = GameChivalry()
         except Exception as e:
             print(f"[PLAYERS WINDOW] Could not connect to Chivalry 2: {e}")
+
         main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
+        main_layout.setSpacing(UI_SPACING_INNER)
+
+        title = QLabel("Players List")
+        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        title.setAlignment(Qt.AlignLeft)
+        main_layout.addWidget(title)
+
+        refresh_btn = QPushButton("Refresh Player List")
+        refresh_btn.setMinimumHeight(36)
+        refresh_btn.clicked.connect(self.refresh_player_list)
+        refresh_btn.setStyleSheet(_colored_button_qss(UI_ACCENT))
+        main_layout.addWidget(refresh_btn)
 
         info_row = QHBoxLayout()
+        info_row.setSpacing(UI_SPACING_INNER)
         self.server_label = QLabel("Server: -")
         self.player_count_label = QLabel("Players: 0")
+        self.server_label.setStyleSheet("font-weight: 600;")
+        self.player_count_label.setStyleSheet("font-weight: 600;")
         info_row.addWidget(self.server_label)
         info_row.addStretch(1)
         info_row.addWidget(self.player_count_label)
-        top_layout = QHBoxLayout()
-        title = QLabel("<h3>Players List:</h3>")
-        title.setAlignment(Qt.AlignLeft)
-        top_layout.addWidget(title)
-        refresh_btn = QPushButton("Refresh Player List")
-        try:
-            self._cb_event_filter = WinClipboardEventFilter(self._on_native_clipboard_update)
-            QAbstractEventDispatcher.instance().installNativeEventFilter(self._cb_event_filter)
-        except Exception:
-            self._cb_event_filter = None
-
-        refresh_btn.clicked.connect(self.refresh_player_list)
-        refresh_btn.setStyleSheet("""
-            QPushButton {
-                padding: 10px;
-                font-weight: bold;
-                background-color: #1976d2;
-                color: white;
-                border: 1px solid #1565c0;
-                border-radius: 6px;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: #1e88e5;
-                border: 1px solid #1976d2;
-            }
-            QPushButton:pressed {
-                background-color: #1565c0;
-            }
-        """)
-        main_layout.addWidget(refresh_btn)
         main_layout.addLayout(info_row)
-        main_layout.addLayout(top_layout)
+
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Search by ID or Player Name...")
+        self.search_bar.setClearButtonEnabled(True)
         self.search_bar.textChanged.connect(self.filter_players)
-        self.player_list = QListWidget()
-        main_layout.addWidget(self.player_list)
         main_layout.addWidget(self.search_bar)
+
+        self.player_list = QListWidget()
+        self.player_list.setItemDelegate(_SanctionedRowDelegate(self.player_list))
+        main_layout.addWidget(self.player_list, 1)
+
         self.player_list.itemClicked.connect(self.open_player_actions)
         self.setLayout(main_layout)
         if self.game is not None:
@@ -743,24 +1234,9 @@ class PlayersWindow(QDialog):
             self.awaiting_player_list = False
             return
 
-        QTimer.singleShot(1500, self._fallback_parse_clipboard)
+        QTimer.singleShot(1500, self._parse_player_list_from_clipboard)
 
-    def on_clipboard_changed(self):
-        """Qt clipboard signal handler; process only when awaiting player list."""
-        if not getattr(self, 'awaiting_player_list', False):
-            return
-        try:
-            text = pyperclip.paste()
-        except Exception:
-            text = ""
-        if " - " in (text or ""):
-            self.players = parse_player_list_from_clipboard()
-            self.filtered_players = self.players.copy()
-            self.populate_list()
-            self._update_info_from_text(text)
-            self.awaiting_player_list = False
-
-    def _fallback_parse_clipboard(self):
+    def _parse_player_list_from_clipboard(self):
         if not getattr(self, 'awaiting_player_list', False):
             return
         try:
@@ -776,8 +1252,21 @@ class PlayersWindow(QDialog):
 
     def populate_list(self):
         self.player_list.clear()
+        white = QBrush(QColor('white'))
+        statuses = _compute_all_player_statuses()
         for name, pid in self.filtered_players:
-            self.player_list.addItem(f"{name} - {pid}")
+            item = QListWidgetItem(f"{name} - {pid}")
+            status = statuses.get(pid.upper())
+            if status == 'banned':
+                item.setBackground(QBrush(QColor(UI_COLOR_BAN)))
+                item.setForeground(white)
+            elif status == 'kicked':
+                item.setBackground(QBrush(QColor(UI_COLOR_KICK)))
+                item.setForeground(white)
+            elif status == 'cautioned':
+                item.setBackground(QBrush(QColor(UI_COLOR_WARN)))
+                item.setForeground(white)
+            self.player_list.addItem(item)
 
     def _update_info_from_text(self, text: str):
 
@@ -826,77 +1315,49 @@ class PlayersWindow(QDialog):
         dialog = PlayerActionDialog(pid, name, parent=self)
         dialog.exec_()
 
-class ActionDialog(QDialog):
-    def __init__(self, title, fields, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.inputs = {}
-        self.setModal(True)
-        self.setWindowModality(Qt.WindowModal)
-
-        layout = QFormLayout()
-        for field in fields:
-            line_edit = QLineEdit()
-            layout.addRow(field + ":", line_edit)
-            self.inputs[field] = line_edit
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-        # IMPORTANT: set the layout so the dialog renders its controls
-        self.setLayout(layout)
-
-    def get_inputs(self):
-        return [line_edit.text().strip() for line_edit in self.inputs.values()]
-
 class AddTimeDialog(QDialog):
     """Custom dialog for adding time with improved layout"""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Add Time")
-        # Non-modal main dialog
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(420)
 
-        # Main layout
         main_layout = QVBoxLayout()
-        main_layout.setSpacing(15)
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(UI_SPACING_SECTION)
+        main_layout.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
 
-        # Title label
         title_label = QLabel("Add time to the current map")
         title_label.setAlignment(Qt.AlignCenter)
-        title_label.setStyleSheet("font-size: 14pt; font-weight: bold; margin-bottom: 10px;")
+        title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
         main_layout.addWidget(title_label)
 
-        # Description label
         desc_label = QLabel("Number of minutes to add:")
         desc_label.setAlignment(Qt.AlignCenter)
-        desc_label.setStyleSheet("font-size: 10pt; margin-bottom: 5px;")
         main_layout.addWidget(desc_label)
 
-        # Input field
         self.time_input = QLineEdit()
         self.time_input.setPlaceholderText("e.g., 5")
         self.time_input.setAlignment(Qt.AlignCenter)
-        self.time_input.setStyleSheet("font-size: 11pt; padding: 8px;")
+        self.time_input.setValidator(QIntValidator(1, 9999, self))
+        self.time_input.setMinimumHeight(34)
         main_layout.addWidget(self.time_input)
 
-        # Buttons
         button_layout = QHBoxLayout()
-        button_layout.setSpacing(10)
-
-        self.ok_button = QPushButton("Add Time")
-        self.ok_button.setStyleSheet("font-size: 10pt; padding: 8px;")
-        self.ok_button.clicked.connect(self.accept)
+        button_layout.setSpacing(UI_SPACING_INNER)
 
         self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.setStyleSheet("font-size: 10pt; padding: 8px;")
+        self.cancel_button.setMinimumHeight(34)
         self.cancel_button.clicked.connect(self.reject)
 
-        button_layout.addWidget(self.ok_button)
+        self.ok_button = QPushButton("Add Time")
+        self.ok_button.setMinimumHeight(34)
+        self.ok_button.setDefault(True)
+        self.ok_button.setStyleSheet(_colored_button_qss(UI_ACCENT))
+        self.ok_button.clicked.connect(self.accept)
+
+        button_layout.addStretch(1)
         button_layout.addWidget(self.cancel_button)
+        button_layout.addWidget(self.ok_button)
 
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
@@ -914,62 +1375,70 @@ class UnbanPlayerDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Unban Player")
-        # Non-modal main dialog
-        self.setMinimumWidth(450)
+        self.setMinimumWidth(460)
 
-        # Main layout
         main_layout = QVBoxLayout()
-        main_layout.setSpacing(15)
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(UI_SPACING_SECTION)
+        main_layout.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
 
-        # Title label
         title_label = QLabel("Unban Player")
         title_label.setAlignment(Qt.AlignCenter)
-        title_label.setStyleSheet("font-size: 14pt; font-weight: bold; margin-bottom: 10px;")
+        title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
         main_layout.addWidget(title_label)
 
-        # Description label
         desc_label = QLabel("Enter the player's PlayFabID:")
         desc_label.setAlignment(Qt.AlignCenter)
-        desc_label.setStyleSheet("font-size: 10pt; margin-bottom: 5px;")
         main_layout.addWidget(desc_label)
 
-        # Input field
         self.playfabid_input = QLineEdit()
         self.playfabid_input.setPlaceholderText("e.g., 1234567890ABCDEF")
         self.playfabid_input.setAlignment(Qt.AlignCenter)
-        self.playfabid_input.setStyleSheet("font-size: 11pt; padding: 8px; font-family: monospace;")
+        self.playfabid_input.setStyleSheet("font-family: Consolas, 'Courier New', monospace; font-size: 11pt;")
         self.playfabid_input.setMaxLength(16)
+        self.playfabid_input.setMinimumHeight(34)
         main_layout.addWidget(self.playfabid_input)
 
-        # Buttons
         button_layout = QHBoxLayout()
-        button_layout.setSpacing(10)
-
-        self.ok_button = QPushButton("Unban Player")
-        self.ok_button.setStyleSheet("font-size: 10pt; padding: 8px;")
-        self.ok_button.clicked.connect(self.accept)
+        button_layout.setSpacing(UI_SPACING_INNER)
 
         self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.setStyleSheet("font-size: 10pt; padding: 8px;")
+        self.cancel_button.setMinimumHeight(34)
         self.cancel_button.clicked.connect(self.reject)
 
-        button_layout.addWidget(self.ok_button)
+        self.ok_button = QPushButton("Unban Player")
+        self.ok_button.setMinimumHeight(34)
+        self.ok_button.setDefault(True)
+        self.ok_button.setStyleSheet(_colored_button_qss(UI_COLOR_UNBAN))
+        self.ok_button.clicked.connect(self.accept)
+
+        button_layout.addStretch(1)
         button_layout.addWidget(self.cancel_button)
+        button_layout.addWidget(self.ok_button)
 
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
+
+    def get_playfabid(self):
+        """Return the entered PlayFabID, trimmed."""
+        return self.playfabid_input.text().strip()
 
 class ConsoleKeyDialog(QDialog):
     def __init__(self, current_vk: str = "", parent=None):
         super().__init__(parent)
         self.setWindowTitle("Configure Console Key")
-        # Non-modal main dialog
-        self.resize(420, 180)
+        self.resize(460, 220)
 
         self.captured_vk = None
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
+        layout.setSpacing(UI_SPACING_SECTION)
+
+        title = QLabel("Configure Console Key")
+        title.setAlignment(Qt.AlignCenter)
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        layout.addWidget(title)
+
         instructions = QLabel(
             "Press the key you use to open the in-game console.\n"
             "The key code will be saved and used for console operations."
@@ -980,16 +1449,18 @@ class ConsoleKeyDialog(QDialog):
 
         self.status = QLabel("Waiting for key press...")
         self.status.setAlignment(Qt.AlignCenter)
+        self.status.setFont(QFont("Segoe UI", 10, QFont.DemiBold))
         layout.addWidget(self.status)
 
         if current_vk:
             try:
                 vk_int = int(current_vk)
-                self.status.setText(f"Current configured key: VK {vk_int} (press a key to change)")
+                self.status.setText(f"Current configured key: VK {vk_int}\n(press a key to change)")
             except Exception:
                 pass
 
-        # Buttons
+        layout.addStretch(1)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.ok_button = buttons.button(QDialogButtonBox.Ok)
         self.ok_button.setEnabled(False)
@@ -1012,6 +1483,135 @@ class ConsoleKeyDialog(QDialog):
         self.status.setText(f"Captured key: VK {self.captured_vk}. Click OK to save or press another key.")
         self.ok_button.setEnabled(True)
 
+class SanctionSearchDialog(QDialog):
+    """Full-history search dialog: filter by Username, PlayFabID, or both.
+
+    Two performance affordances tuned for large histories:
+      * Search input is debounced (~200 ms) so each keystroke does not
+        rebuild the card list mid-typing.
+      * Renders at most `_RENDER_CAP_DEFAULT` cards initially; if more
+        results match, a "Show all" footer button lifts the cap. Card
+        construction is by far the slowest part of a refresh, so this
+        bounds worst-case latency regardless of total history size.
+    """
+
+    # Initial render is bounded because each card is a QFrame with a
+    # stylesheet, and Qt's stylesheet pass on first paint dominates open
+    # latency. 50 keeps the scroll feeling populated without freezing
+    # the dialog on first show; "Show all" lifts the cap on demand.
+    _RENDER_CAP_DEFAULT = 50
+    _SEARCH_DEBOUNCE_MS = 200
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Sanction History Search")
+        self.resize(760, 640)
+        self.setModal(True)
+
+        # Load the full history once
+        self._all_records = list(reversed(_load_all_sanctions()))  # most-recent first
+        self._render_cap  = self._RENDER_CAP_DEFAULT
+
+        root = QVBoxLayout()
+        root.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
+        root.setSpacing(UI_SPACING_INNER)
+        self.setLayout(root)
+
+        # ── Search bar + inline count label ───────────────────────────
+        bar_row = QHBoxLayout()
+        bar_row.setSpacing(UI_SPACING_INNER)
+
+        self._search_input = QLineEdit()
+        self._search_input.setPlaceholderText("Search by Username or PlayFabID…")
+        self._search_input.setClearButtonEnabled(True)
+        self._search_input.textChanged.connect(lambda _: self._on_text_changed())
+        bar_row.addWidget(self._search_input, 1)
+
+        self._result_label = QLabel()
+        self._result_label.setStyleSheet("color: gray; font-style: italic; font-size: 12pt; padding: 0px 10px 0px 0px;")
+        self._result_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._result_label.setMinimumWidth(80)
+        bar_row.addWidget(self._result_label, 0)
+
+        root.addLayout(bar_row)
+
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.timeout.connect(self._refresh)
+
+        # ── Scroll area ───────────────────────────────────────────────
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        root.addWidget(self._scroll, 1)
+
+        self._refresh()
+
+    # ── Internal helpers ──────────────────────────────────────────────
+
+    def _on_text_changed(self):
+        # Each new query is a fresh view: reset the render cap so we
+        # don't carry "Show all" state from a previous filter.
+        self._render_cap = self._RENDER_CAP_DEFAULT
+        self._search_timer.start(self._SEARCH_DEBOUNCE_MS)
+
+    def _show_all(self, total: int):
+        self._render_cap = total
+        self._refresh()
+
+    def _refresh(self):
+        term = self._search_input.text().strip().lower()
+
+        if not term:
+            matches = self._all_records
+        else:
+            seen    = set()
+            matches = []
+            for record in self._all_records:
+                rid = record.get('id', '')
+                if rid in seen:
+                    continue
+                if (term in record.get('Username',  '').lower() or
+                        term in record.get('PlayFabID', '').lower()):
+                    seen.add(rid)
+                    matches.append(record)
+
+        count = len(matches)
+        if not term:
+            self._result_label.setText(f"{count} total")
+        else:
+            self._result_label.setText(
+                f"{count} match" + ("" if count == 1 else "es")
+            )
+
+        # Rebuild scroll content
+        content = QWidget()
+        layout  = QVBoxLayout(content)
+        layout.setSpacing(6)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        if matches:
+            visible  = matches[:self._render_cap]
+            overflow = count - len(visible)
+            is_dark  = load_theme_preference()
+            for record in visible:
+                layout.addWidget(_build_sanction_card(record, is_dark, embed_playfabid=True))
+            if overflow > 0:
+                more_btn = QPushButton(f"Show all {count} records ({overflow} more)… (Expect a few seconds freeze.)")
+                more_btn.setMinimumHeight(34)
+                more_btn.clicked.connect(lambda _=False, n=count: self._show_all(n))
+                layout.addWidget(more_btn)
+        else:
+            empty = QLabel("No matching records found.")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setStyleSheet("color: gray; font-style: italic; padding: 24px;")
+            layout.addWidget(empty)
+
+        layout.addStretch()
+        self._scroll.setWidget(content)
+
+
 class AdminDashboard(QWidget):
     def __init__(self):
         super().__init__()
@@ -1019,28 +1619,26 @@ class AdminDashboard(QWidget):
         # Try to connect to Chivalry 2, but don't fail if it's not available
         self.game = None
         self.chivalry_connected = False
-        self.server_connected = False
-        self.last_player_count = 0
 
         self.setWindowTitle("Admin Dashboard")
-        self.resize(1400, 500)
+        self.resize(1400, 520)
         main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(24, 16, 24, 16)
-        main_layout.setSpacing(16)
+        main_layout.setContentsMargins(UI_PAD_OUTER + 6, UI_PAD_OUTER - 2, UI_PAD_OUTER + 6, UI_PAD_OUTER - 2)
+        main_layout.setSpacing(UI_SPACING_SECTION)
         title = QLabel("Admin Dashboard")
         title.setFont(QFont("Segoe UI", 20, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
-        title.setContentsMargins(0, 4, 0, 4)
         main_layout.addWidget(title)
+
         status_group = QGroupBox("Server Status")
         status_layout = QVBoxLayout()
+        status_layout.setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
+        status_layout.setSpacing(UI_PAD_TIGHT)
 
-        # Initialize status label (will be updated by update_connection_status)
         self.status_label = QLabel("Checking connection...")
         self.status_label.setAlignment(Qt.AlignCenter)
         status_layout.addWidget(self.status_label)
 
-        # Add webhook status
         self.webhook_status_label = QLabel()
         self.webhook_status_label.setAlignment(Qt.AlignCenter)
         self.update_webhook_status()
@@ -1048,57 +1646,46 @@ class AdminDashboard(QWidget):
 
         status_group.setLayout(status_layout)
         main_layout.addWidget(status_group)
+
         admin_message_group = QGroupBox("Admin Message")
         admin_message_layout = QVBoxLayout()
+        admin_message_layout.setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
+        admin_message_layout.setSpacing(UI_PAD_INNER)
 
         admin_input_row = QHBoxLayout()
+        admin_input_row.setSpacing(UI_SPACING_INNER)
         self.admin_message_input = QLineEdit()
         self.admin_message_input.setPlaceholderText("Type the admin message to send...")
         self.admin_message_input.setText(get_persisted_value('last_admin_msg', ""))
         self.admin_message_input.editingFinished.connect(lambda: set_persisted_value('last_admin_msg', self.admin_message_input.text().strip()))
         admin_input_row.addWidget(self.admin_message_input, 1)
         btn_send_admin_message = QPushButton("Send Admin Message")
-        btn_send_admin_message.setMinimumWidth(160)
+        btn_send_admin_message.setMinimumWidth(170)
+        btn_send_admin_message.setStyleSheet(_colored_button_qss(UI_ACCENT))
         btn_send_admin_message.clicked.connect(self.send_admin_message)
         admin_input_row.addWidget(btn_send_admin_message)
         admin_message_layout.addLayout(admin_input_row)
 
         admin_preset_layout = QVBoxLayout()
+        admin_preset_layout.setSpacing(UI_PAD_TIGHT)
         self.admin_load_buttons = []
         self.admin_save_buttons = []
         self.admin_clear_buttons = []
 
-        tip_icon_admin = QLabel("Tip")
-        tip_icon_admin.setToolTip("You can hover a loading button to preview the saved message")
-        tip_icon_admin.setFixedSize(30, 20)
-        tip_icon_admin.setAlignment(Qt.AlignCenter)
-        tip_icon_admin.setStyleSheet("QLabel { color: #888888; font-weight: bold; border: 1px solid #888888; border-radius: 8px; }")
-        admin_preset_layout.addWidget(tip_icon_admin, 0, Qt.AlignRight)
+        admin_preset_layout.addWidget(
+            _make_tip_badge("Hover a Load button to preview the saved message"),
+            0, Qt.AlignRight,
+        )
 
         admin_columns_row = QHBoxLayout()
+        admin_columns_row.setSpacing(UI_SPACING_INNER)
         for idx in range(ADMIN_PRESET_COUNT):
-            col = QVBoxLayout()
-            col.setSpacing(6)
-            col.addWidget(QLabel(f"Slot {idx}"), 0)
-
-            btn_load = QPushButton("Load")
-            btn_load.clicked.connect(lambda _, s=idx: self.load_admin_preset(s))
-            btn_load.setMinimumWidth(90)
-            self.admin_load_buttons.append(btn_load)
-            col.addWidget(btn_load)
-
-            btn_save = QPushButton("Save / Overwrite")
-            btn_save.clicked.connect(lambda _, s=idx: self.save_admin_preset(s))
-            btn_save.setMinimumWidth(90)
-            self.admin_save_buttons.append(btn_save)
-            col.addWidget(btn_save)
-
-            btn_clear = QPushButton("Clear")
-            btn_clear.clicked.connect(lambda _, s=idx: self.clear_admin_preset(s))
-            btn_clear.setMinimumWidth(90)
-            self.admin_clear_buttons.append(btn_clear)
-            col.addWidget(btn_clear)
-
+            col = _make_preset_column(
+                idx, self.load_admin_preset, self.save_admin_preset, self.clear_admin_preset
+            )
+            self.admin_load_buttons.append(col._btn_load)
+            self.admin_save_buttons.append(col._btn_save)
+            self.admin_clear_buttons.append(col._btn_clear)
             admin_columns_row.addLayout(col, 1)
         admin_preset_layout.addLayout(admin_columns_row)
 
@@ -1107,55 +1694,43 @@ class AdminDashboard(QWidget):
 
         server_message_group = QGroupBox("Server Message")
         server_message_layout = QVBoxLayout()
+        server_message_layout.setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
+        server_message_layout.setSpacing(UI_PAD_INNER)
 
         server_input_row = QHBoxLayout()
+        server_input_row.setSpacing(UI_SPACING_INNER)
         self.server_message_input = QLineEdit()
         self.server_message_input.setPlaceholderText("Type the server message to send...")
         self.server_message_input.setText(get_persisted_value('last_server_msg', ""))
         self.server_message_input.editingFinished.connect(lambda: set_persisted_value('last_server_msg', self.server_message_input.text().strip()))
         server_input_row.addWidget(self.server_message_input, 1)
         btn_send_server_message = QPushButton("Send Server Message")
-        btn_send_server_message.setMinimumWidth(160)
+        btn_send_server_message.setMinimumWidth(170)
+        btn_send_server_message.setStyleSheet(_colored_button_qss(UI_ACCENT))
         btn_send_server_message.clicked.connect(self.send_server_message)
         server_input_row.addWidget(btn_send_server_message)
         server_message_layout.addLayout(server_input_row)
 
         server_preset_layout = QVBoxLayout()
+        server_preset_layout.setSpacing(UI_PAD_TIGHT)
         self.server_load_buttons = []
         self.server_save_buttons = []
         self.server_clear_buttons = []
 
-        tip_icon_server = QLabel("Tip")
-        tip_icon_server.setToolTip("You can hover a loading button to preview the saved message")
-        tip_icon_server.setFixedSize(30, 20)
-        tip_icon_server.setAlignment(Qt.AlignCenter)
-        tip_icon_server.setStyleSheet("QLabel { color: #888888; font-weight: bold; border: 1px solid #888888; border-radius: 8px; }")
-        server_preset_layout.addWidget(tip_icon_server, 0, Qt.AlignRight)
+        server_preset_layout.addWidget(
+            _make_tip_badge("Hover a Load button to preview the saved message"),
+            0, Qt.AlignRight,
+        )
 
         server_columns_row = QHBoxLayout()
+        server_columns_row.setSpacing(UI_SPACING_INNER)
         for idx in range(SERVER_PRESET_COUNT):
-            col = QVBoxLayout()
-            col.setSpacing(6)
-            col.addWidget(QLabel(f"Slot {idx}"), 0)
-
-            btn_load = QPushButton("Load")
-            btn_load.clicked.connect(lambda _, s=idx: self.load_server_preset(s))
-            btn_load.setMinimumWidth(90)
-            self.server_load_buttons.append(btn_load)
-            col.addWidget(btn_load)
-
-            btn_save = QPushButton("Save / Overwrite")
-            btn_save.clicked.connect(lambda _, s=idx: self.save_server_preset(s))
-            btn_save.setMinimumWidth(90)
-            self.server_save_buttons.append(btn_save)
-            col.addWidget(btn_save)
-
-            btn_clear = QPushButton("Clear")
-            btn_clear.clicked.connect(lambda _, s=idx: self.clear_server_preset(s))
-            btn_clear.setMinimumWidth(90)
-            self.server_clear_buttons.append(btn_clear)
-            col.addWidget(btn_clear)
-
+            col = _make_preset_column(
+                idx, self.load_server_preset, self.save_server_preset, self.clear_server_preset
+            )
+            self.server_load_buttons.append(col._btn_load)
+            self.server_save_buttons.append(col._btn_save)
+            self.server_clear_buttons.append(col._btn_clear)
             server_columns_row.addLayout(col, 1)
         server_preset_layout.addLayout(server_columns_row)
 
@@ -1164,17 +1739,23 @@ class AdminDashboard(QWidget):
 
         commands_group = QGroupBox("Commands")
         commands_layout = QVBoxLayout()
+        commands_layout.setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
+        commands_layout.setSpacing(UI_SPACING_INNER)
 
         actions_row = QHBoxLayout()
+        actions_row.setSpacing(UI_SPACING_INNER)
         btn_players = QPushButton("Players List")
+        btn_players.setMinimumHeight(34)
         btn_players.clicked.connect(self.open_players_window)
         actions_row.addWidget(btn_players)
 
         btn_add_time = QPushButton("Add Time")
+        btn_add_time.setMinimumHeight(34)
         btn_add_time.clicked.connect(self.open_add_time_dialog)
         actions_row.addWidget(btn_add_time)
 
         btn_unban = QPushButton("Unban Player")
+        btn_unban.setMinimumHeight(34)
         btn_unban.clicked.connect(self.open_unban_dialog)
         actions_row.addWidget(btn_unban)
 
@@ -1182,8 +1763,11 @@ class AdminDashboard(QWidget):
 
         arb_group = QGroupBox("Arbitration")
         arb_layout = QVBoxLayout()
+        arb_layout.setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
+        arb_layout.setSpacing(UI_PAD_INNER)
 
         btn_first_to = QPushButton("Match Arbitration (First To)")
+        btn_first_to.setMinimumHeight(34)
         btn_first_to.clicked.connect(self.open_first_to_window)
         arb_layout.addWidget(btn_first_to)
 
@@ -1191,7 +1775,7 @@ class AdminDashboard(QWidget):
         commands_layout.addWidget(arb_group)
 
         admin_server_row = QHBoxLayout()
-        admin_server_row.setSpacing(12)
+        admin_server_row.setSpacing(UI_SPACING_SECTION)
         admin_message_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         server_message_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         admin_server_row.addWidget(admin_message_group, 1)
@@ -1201,8 +1785,15 @@ class AdminDashboard(QWidget):
         commands_group.setLayout(commands_layout)
         main_layout.addWidget(commands_group)
 
+        btn_sanction_search = QPushButton("Sanction History")
+        btn_sanction_search.setMinimumHeight(34)
+        btn_sanction_search.clicked.connect(lambda: SanctionSearchDialog(self).exec_())
+        main_layout.addWidget(btn_sanction_search)
+
         settings_group = QGroupBox("Settings")
         settings_layout = QVBoxLayout()
+        settings_layout.setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
+        settings_layout.setSpacing(UI_PAD_TIGHT)
 
         btn_webhook_config = QPushButton("Configure Discord Webhook")
         btn_webhook_config.clicked.connect(self.configure_discord_webhook)
@@ -1211,6 +1802,18 @@ class AdminDashboard(QWidget):
         btn_discord_id_config = QPushButton("Configure Discord User ID")
         btn_discord_id_config.clicked.connect(self.configure_discord_user_id)
         settings_layout.addWidget(btn_discord_id_config)
+
+        btn_discord_bot_token = QPushButton("Set Discord Bot Token")
+        btn_discord_bot_token.clicked.connect(self.configure_discord_bot_token)
+        settings_layout.addWidget(btn_discord_bot_token)
+
+        btn_discord_channel_id = QPushButton("Set Discord Channel ID")
+        btn_discord_channel_id.clicked.connect(self.configure_discord_channel_id)
+        settings_layout.addWidget(btn_discord_channel_id)
+
+        btn_fetch_discord = QPushButton("Fetch Discord Channel Messages")
+        btn_fetch_discord.clicked.connect(self.fetch_discord_channel_messages)
+        settings_layout.addWidget(btn_fetch_discord)
 
         btn_console_key = QPushButton("Configure Console Key")
         btn_console_key.clicked.connect(self.configure_console_key)
@@ -1236,6 +1839,8 @@ class AdminDashboard(QWidget):
 
         self.update_admin_preset_tooltips()
         self.update_server_preset_tooltips()
+
+        self.fetch_discord_channel_messages(silent=True)
 
         self.players_window = None
         self.first_to_window = None
@@ -1276,7 +1881,6 @@ class AdminDashboard(QWidget):
         elif not game_window_exists and self.chivalry_connected:
             print("[CONNECTION] Chivalry 2 window no longer found - disconnecting")
             self.chivalry_connected = False
-            self.server_connected = False
             self.game = None
 
         self.update_connection_status()
@@ -1288,10 +1892,7 @@ class AdminDashboard(QWidget):
             if preset_text:
                 display = (preset_text[:50] + "...") if len(preset_text) > 50 else preset_text
                 btn.setToolTip(f"Slot {idx}: {display}")
-                if is_dark_theme:
-                    btn.setStyleSheet("QPushButton { background-color: #2d5a2d; color: #ffffff; }")
-                else:
-                    btn.setStyleSheet("QPushButton { background-color: #e6ffe6; color: #333333; }")
+                btn.setStyleSheet(_populated_preset_qss(is_dark_theme))
             else:
                 btn.setToolTip(f"Slot {idx}: Empty")
                 btn.setStyleSheet("")
@@ -1303,10 +1904,7 @@ class AdminDashboard(QWidget):
             if preset_text:
                 display = (preset_text[:50] + "...") if len(preset_text) > 50 else preset_text
                 btn.setToolTip(f"Slot {idx}: {display}")
-                if is_dark_theme:
-                    btn.setStyleSheet("QPushButton { background-color: #2d5a2d; color: #ffffff; }")
-                else:
-                    btn.setStyleSheet("QPushButton { background-color: #e6ffe6; color: #333333; }")
+                btn.setStyleSheet(_populated_preset_qss(is_dark_theme))
             else:
                 btn.setToolTip(f"Slot {idx}: Empty")
                 btn.setStyleSheet("")
@@ -1355,34 +1953,34 @@ class AdminDashboard(QWidget):
         QMessageBox.information(self, "Preset Cleared", f"Server Message preset {slot} cleared successfully!")
         self.update_server_preset_tooltips()
 
-
-        self.update_connection_status()
-
     def update_connection_status(self):
         """Update the connection status display"""
         if self.chivalry_connected:
-            self.status_label.setText("Chivalry 2 Connected")
-            self.status_label.setStyleSheet("color: green; font-weight: bold;")
+            self.status_label.setText("● Chivalry 2 Connected")
+            self.status_label.setStyleSheet(f"color: {UI_STATUS_OK}; font-weight: bold;")
         else:
-            self.status_label.setText("Chivalry 2 Not Connected")
-            self.status_label.setStyleSheet("color: red; font-weight: bold;")
+            self.status_label.setText("● Chivalry 2 Not Connected")
+            self.status_label.setStyleSheet(f"color: {UI_STATUS_DANGER}; font-weight: bold;")
 
     def update_webhook_status(self):
         """Update the webhook status display"""
         status = wehbooks.get_webhook_status()
 
+        ok_style = f"color: {UI_STATUS_OK}; font-weight: 600;"
+        warn_style = f"color: {UI_STATUS_WARN}; font-weight: 600;"
+
         if status['primary_active'] and status['secondary_active']:
             self.webhook_status_label.setText("Discord: Primary + Secondary Active")
-            self.webhook_status_label.setStyleSheet("color: green;")
+            self.webhook_status_label.setStyleSheet(ok_style)
         elif status['primary_active']:
             self.webhook_status_label.setText("Discord: Primary Active")
-            self.webhook_status_label.setStyleSheet("color: green;")
+            self.webhook_status_label.setStyleSheet(ok_style)
         elif status['secondary_active']:
             self.webhook_status_label.setText("Discord: Secondary Active")
-            self.webhook_status_label.setStyleSheet("color: green;")
+            self.webhook_status_label.setStyleSheet(ok_style)
         else:
             self.webhook_status_label.setText("Discord: Not Configured")
-            self.webhook_status_label.setStyleSheet("color: orange;")
+            self.webhook_status_label.setStyleSheet(warn_style)
 
     def send_admin_message(self):
         msg = self.admin_message_input.text().strip()
@@ -1529,6 +2127,7 @@ class AdminDashboard(QWidget):
                         if confirm == QMessageBox.Yes:
                             # Send Discord webhook notification only if user confirms success
                             wehbooks.MessageForAdmin(player_id, "N/A", None, None, "unban")
+                            _schedule_silent_discord_scrape(self)
                             QMessageBox.information(
                                 self,
                                 "Player Unbanned",
@@ -1592,22 +2191,10 @@ class AdminDashboard(QWidget):
 
     def configure_discord_webhook(self):
         """Allow user to reconfigure Discord webhooks"""
-        import os
-
-        # Get current webhook URLs if they exist
-        current_primary_url = ""
-        current_secondary_url = ""
-        localconfig = "localconfig"
-        if os.path.exists(localconfig):
-            try:
-                with open(localconfig, 'r', encoding='utf-8') as f:
-                    lines = f.read().strip().split('\n')
-                    if len(lines) >= 1 and lines[0] != "None":
-                        current_primary_url = lines[0]
-                    if len(lines) >= 2 and lines[1] != "None":
-                        current_secondary_url = lines[1]
-            except Exception:
-                pass
+        current_primary_url   = get_persisted_value('primary_webhook', '')
+        current_secondary_url = get_persisted_value('secondary_webhook', '')
+        if current_primary_url   == 'None': current_primary_url   = ''
+        if current_secondary_url == 'None': current_secondary_url = ''
 
         # Prompt for primary webhook URL
         primary_url, ok = self.prompt_wide_text(
@@ -1651,27 +2238,9 @@ class AdminDashboard(QWidget):
             else:
                 secondary_url = ""
 
-        # Save the URLs to file, preserving all other lines in localconfig
         try:
-            # Read all existing lines
-            lines = []
-            if os.path.exists(localconfig):
-                with open(localconfig, 'r', encoding='utf-8') as f:
-                    lines = f.read().splitlines()
-            # Ensure at least 3 header lines and 10 preset lines
-            min_len = 13
-            if len(lines) < min_len:
-                lines += [""] * (min_len - len(lines))
-            # Update header values
-            lines[0] = primary_url if primary_url else 'None'
-            lines[1] = secondary_url if secondary_url else 'None'
-            # Preserve existing Discord user ID in line 2 if present, else keep current content
-            if len(lines) < 3:
-                lines += ["None"] * (3 - len(lines))
-            # Write all lines back
-            with open(localconfig, 'w', encoding='utf-8') as f:
-                for line in lines:
-                    f.write(line + "\n")
+            set_persisted_value('primary_webhook',   primary_url   or 'None')
+            set_persisted_value('secondary_webhook', secondary_url or 'None')
 
             # Reinitialize webhooks
             webhook_initialized = wehbooks.initialize_webhook()
@@ -1681,19 +2250,14 @@ class AdminDashboard(QWidget):
 
             if primary_url or secondary_url:
                 if webhook_initialized:
-                    message = "Discord webhook(s) have been configured successfully!"
                     if primary_url and secondary_url:
                         message = "Both primary and secondary Discord webhooks have been configured successfully!"
                     elif primary_url:
                         message = "Primary Discord webhook has been configured successfully!"
-                    elif secondary_url:
+                    else:
                         message = "Secondary Discord webhook has been configured successfully!"
 
-                    QMessageBox.information(
-                        self,
-                        "Configuration Successful",
-                        message
-                    )
+                    QMessageBox.information(self, "Configuration Successful", message)
                 else:
                     QMessageBox.warning(
                         self,
@@ -1717,19 +2281,9 @@ class AdminDashboard(QWidget):
 
     def configure_discord_user_id(self):
         """Allow user to configure Discord User ID"""
-        import os
-
-        # Get current Discord user ID if it exists
-        current_discord_user_id = ""
-        localconfig = "localconfig"
-        if os.path.exists(localconfig):
-            try:
-                with open(localconfig, 'r', encoding='utf-8') as f:
-                    lines = f.read().strip().split('\n')
-                    if len(lines) >= 3 and lines[2] != "None":
-                        current_discord_user_id = lines[2]
-            except Exception:
-                pass
+        current_discord_user_id = get_persisted_value('discord_user_id', '')
+        if current_discord_user_id == 'None':
+            current_discord_user_id = ''
 
         # Prompt for new Discord user ID
         discord_user_id, ok = QInputDialog.getText(
@@ -1746,29 +2300,8 @@ class AdminDashboard(QWidget):
 
         discord_user_id = discord_user_id.strip()
 
-        # Save the Discord user ID to file, preserving all other lines
         try:
-            # Read all existing lines
-            lines = []
-            if os.path.exists(localconfig):
-                with open(localconfig, 'r', encoding='utf-8') as f:
-                    lines = f.read().splitlines()
-            # Ensure at least 3 header lines and 10 preset lines
-            min_len = 13
-            if len(lines) < min_len:
-                lines += [""] * (min_len - len(lines))
-            # Update header values
-            if len(lines) < 1:
-                lines.append('None')
-            if len(lines) < 2:
-                lines.append('None')
-            if len(lines) < 3:
-                lines.append('None')
-            lines[2] = discord_user_id if discord_user_id else 'None'
-            # Write all lines back
-            with open(localconfig, 'w', encoding='utf-8') as f:
-                for line in lines:
-                    f.write(line + "\n")
+            set_persisted_value('discord_user_id', discord_user_id or 'None')
 
             if discord_user_id:
                 QMessageBox.information(
@@ -1789,6 +2322,478 @@ class AdminDashboard(QWidget):
                 "Save Error",
                 f"Unable to save Discord User ID:\n{str(e)}"
             )
+
+    def configure_discord_bot_token(self):
+        """Allow user to set the Discord Bot Token used for channel scraping."""
+        current_token = get_persisted_value('discord_bot_token', '')
+        if current_token == 'None':
+            current_token = ''
+
+        token, ok = self.prompt_wide_text(
+            "Discord Bot Token",
+            "Enter your Discord Bot Token:\n"
+            "(Leave empty to clear)",
+            current_token
+        )
+        if not ok:
+            return
+
+        token = token.strip()
+        set_persisted_value('discord_bot_token', token if token else 'None')
+
+    def configure_discord_channel_id(self):
+        """Allow user to set the Discord Channel ID to scrape."""
+        current_channel = get_persisted_value('discord_channel_id', '')
+        if current_channel == 'None':
+            current_channel = ''
+
+        channel_id, ok = QInputDialog.getText(
+            self,
+            "Discord Channel ID",
+            "Enter the Discord Channel ID to scrape:\n",
+            "(Leave empty to clear)",
+            text=current_channel
+        )
+        if not ok:
+            return
+
+        channel_id = channel_id.strip()
+        if channel_id and not channel_id.isdigit():
+            QMessageBox.warning(self, "Invalid Channel ID", "Channel ID must be a numeric value.")
+            return
+
+        set_persisted_value('discord_channel_id', channel_id if channel_id else 'None')
+
+    def fetch_discord_channel_messages(self, silent: bool = False):
+        """Fetch all webhook messages from the configured Discord channel and save to discordlogshistory.
+
+        When `silent=True` the call is treated as a background refresh:
+        missing configuration and errors are swallowed (logged to stdout
+        only) and no progress dialog is shown. Used by the auto-scrape
+        that runs right after an action's webhook is sent — and from
+        startup, where the Discord round-trips would otherwise freeze
+        the dashboard for the duration of pagination + sleeps.
+
+        The silent path runs on a daemon thread; the manual path
+        (`silent=False`) stays on the main thread because it owns a
+        modal QProgressBar dialog and surfaces errors via QMessageBox.
+        A non-blocking lock dedupes back-to-back silent triggers (e.g.
+        a startup scrape colliding with the post-action follow-up).
+        """
+        if silent:
+            if not _silent_scrape_lock.acquire(blocking=False):
+                # Another silent scrape is already in flight — let it
+                # finish; the next event will retrigger naturally.
+                return
+
+            def _run():
+                try:
+                    self._fetch_discord_channel_messages_impl(silent=True)
+                finally:
+                    _silent_scrape_lock.release()
+
+            threading.Thread(
+                target=_run,
+                name="discord-silent-scrape",
+                daemon=True,
+            ).start()
+            return
+
+        self._fetch_discord_channel_messages_impl(silent=False)
+
+    def _fetch_discord_channel_messages_impl(self, silent: bool):
+        """Body of the scrape. Runs on the calling thread.
+
+        For `silent=True` callers, the calling thread is a daemon
+        worker (see `fetch_discord_channel_messages`). Anything that
+        touches Qt widgets in this body is gated on `silent=False`,
+        so the silent path stays Qt-free and thread-safe.
+        """
+        import urllib.request
+        import urllib.error
+        import json
+        import time
+
+        token = get_persisted_value('discord_bot_token', '')
+        channel_id = get_persisted_value('discord_channel_id', '')
+
+        if not token or token == 'None':
+            if not silent:
+                QMessageBox.warning(
+                    self, "Not Configured",
+                    "No Discord Bot Token configured.\n"
+                    "Please use 'Set Discord Bot Token' first."
+                )
+            else:
+                print("[SCRAPE] Skipped auto-scrape: bot token not configured")
+            return
+        if not channel_id or channel_id == 'None':
+            if not silent:
+                QMessageBox.warning(
+                    self, "Not Configured",
+                    "No Discord Channel ID configured.\n"
+                    "Please use 'Set Discord Channel ID' first."
+                )
+            else:
+                print("[SCRAPE] Skipped auto-scrape: channel id not configured")
+            return
+
+        progress_dialog = None
+        if not silent:
+            progress_dialog = QDialog(self)
+            progress_dialog.setWindowTitle("Fetching Messages...")
+            progress_dialog.setModal(True)
+            pd_layout = QVBoxLayout()
+            pd_layout.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
+            pd_layout.setSpacing(UI_SPACING_INNER)
+            pd_label = QLabel("Connecting to Discord API, please wait...")
+            pd_label.setAlignment(Qt.AlignCenter)
+            pd_layout.addWidget(pd_label)
+            pd_progress = QProgressBar()
+            pd_progress.setRange(0, 0)
+            pd_progress.setTextVisible(False)
+            pd_layout.addWidget(pd_progress)
+            progress_dialog.setLayout(pd_layout)
+            progress_dialog.resize(420, 120)
+            progress_dialog.show()
+            QApplication.processEvents()
+
+        # Thin shims so the rest of the function can update the progress
+        # dialog without branching on `silent` at every call site.
+        def _pd_set_text(txt: str):
+            if progress_dialog is not None:
+                pd_label.setText(txt)
+                QApplication.processEvents()
+
+        def _pd_close():
+            if progress_dialog is not None:
+                progress_dialog.close()
+
+        def _err(title: str, body: str):
+            if silent:
+                print(f"[SCRAPE] {title}: {body}")
+            else:
+                QMessageBox.critical(self, title, body)
+
+        # --- Read the existing log via the in-memory cache -----------------
+        # Hoisted above the pagination loop so we can compare each
+        # incoming Discord message against its cached twin and break
+        # early once we've crossed into already-stored history. The
+        # dicts returned here are the cache's own references — legacy
+        # name enrichment below mutates them in place. The file rewrite
+        # at the end then drops a fresh mtime, and we explicitly
+        # invalidate the cache so the next read picks up the canonical
+        # disk state.
+        all_records_view, _, by_id_view, _ = _read_log_cached()
+        existing_records = list(all_records_view)
+        existing_ids_set = set(by_id_view.keys())
+        ids_missing_name = set()
+        for rec in existing_records:
+            if not isinstance(rec, dict):
+                continue
+            raw_mid = rec.get('ModeratorID', '')
+            if raw_mid and not rec.get('ModeratorName', ''):
+                # Pull the numeric id out even if the stored value is still
+                # a raw mention like "<@!123>" or was stored as "!123" by
+                # a previous buggy extractor.
+                mid = _extract_mention_id(raw_mid)
+                if mid:
+                    ids_missing_name.add(mid)
+
+        all_messages = []
+        before = None
+        headers = {
+            'Authorization': f'Bot {token}',
+            'Content-Type': 'application/json',
+            'User-Agent': 'OVAAdminTool/1.0'
+        }
+
+        # Hard cap on retry_after values returned by Discord so a pathological
+        # response can't lock the UI for a long time.
+        MAX_RETRY_AFTER = 60.0
+
+        # Early-stop: once we've seen this many consecutive incoming
+        # webhook messages whose core fields equal the cached record at
+        # the same id, everything older must already be on disk and
+        # there's no point paginating further. Saves bandwidth and rate-
+        # limit budget on every routine refresh after the first full
+        # backfill. Non-webhook messages are ignored for this counter
+        # (mixed channels of human chat + webhooks would otherwise never
+        # accumulate "consecutive" matches).
+        EARLY_STOP_THRESHOLD = 10
+        consecutive_matches = 0
+        early_stop          = False
+
+        try:
+            while True:
+                url = f'https://discord.com/api/v10/channels/{channel_id}/messages?limit=100'
+                if before:
+                    url += f'&before={before}'
+
+                req = urllib.request.Request(url, headers=headers)
+
+                try:
+                    with urllib.request.urlopen(req, timeout=15) as response:
+                        raw = response.read()
+                    try:
+                        data = json.loads(raw.decode('utf-8', errors='replace'))
+                    except Exception:
+                        _pd_close()
+                        _err("Invalid Response",
+                             "Discord returned a response that could not be decoded as JSON.")
+                        return
+                except urllib.error.HTTPError as e:
+                    if e.code == 429:
+                        try:
+                            error_data = json.loads(e.read().decode('utf-8', errors='replace'))
+                            retry_after = float(error_data.get('retry_after', 1.0))
+                        except Exception:
+                            retry_after = 1.0
+                        retry_after = max(0.0, min(retry_after, MAX_RETRY_AFTER))
+                        _pd_set_text(f"Rate limited — retrying in {retry_after:.1f}s...")
+                        time.sleep(retry_after)
+                        continue
+                    elif e.code == 401:
+                        _pd_close()
+                        _err("Authentication Failed",
+                             "Invalid Bot Token. Please reconfigure the Discord Bot Scraper.")
+                        return
+                    elif e.code == 403:
+                        _pd_close()
+                        _err("Access Denied",
+                             "The bot does not have permission to read this channel.\n"
+                             "Make sure it has the 'Read Message History' permission.")
+                        return
+                    elif e.code == 404:
+                        _pd_close()
+                        _err("Channel Not Found",
+                             "Channel ID not found. Please verify the Channel ID is correct.")
+                        return
+                    else:
+                        _pd_close()
+                        _err("HTTP Error", f"Discord API returned HTTP {e.code}.")
+                        return
+                except urllib.error.URLError as e:
+                    _pd_close()
+                    _err("Network Error",
+                         f"Could not reach Discord:\n{str(getattr(e, 'reason', e))}")
+                    return
+
+                # Discord should return a list; an object usually means an
+                # error envelope. Bail out cleanly rather than crashing on
+                # index/iteration.
+                if not isinstance(data, list):
+                    break
+                if not data:
+                    break
+
+                # Walk the page in API order (newest-first within the
+                # page). Webhook messages get appended to `all_messages`
+                # as before, but we also tally consecutive cached
+                # matches so we can stop the moment we've crossed into
+                # history we already have on disk.
+                for m in data:
+                    if not isinstance(m, dict):
+                        continue
+                    if not m.get('webhook_id'):
+                        continue
+                    all_messages.append(m)
+
+                    mid = m.get('id')
+                    cached = by_id_view.get(mid) if mid else None
+                    if cached is not None and _scrape_record_matches(m, cached):
+                        consecutive_matches += 1
+                        if consecutive_matches >= EARLY_STOP_THRESHOLD:
+                            early_stop = True
+                            break
+                    else:
+                        consecutive_matches = 0
+
+                if early_stop:
+                    if silent:
+                        print(f"[SCRAPE] Early stop: {EARLY_STOP_THRESHOLD} "
+                              f"consecutive cached matches; older history already on disk")
+                    else:
+                        _pd_set_text(
+                            f"Reached cached history ({EARLY_STOP_THRESHOLD} "
+                            f"consecutive matches) — stopping."
+                        )
+                    break
+
+                # Find the last usable id for pagination; skip entries that
+                # lack one instead of crashing with KeyError.
+                last_id = ''
+                for m in reversed(data):
+                    if isinstance(m, dict) and m.get('id'):
+                        last_id = m['id']
+                        break
+                if not last_id:
+                    break
+                before = last_id
+
+                _pd_set_text(f"Fetched {len(all_messages)} webhook messages so far...")
+
+                if len(data) < 100:
+                    break
+
+                time.sleep(0.25)
+
+        except Exception as e:
+            _pd_close()
+            _err("Error", f"An unexpected error occurred:\n{str(e)}")
+            return
+
+        if not all_messages:
+            _pd_close()
+            return
+
+        # Sort oldest first (by snowflake ID, which is chronological).
+        # Fall back to empty string so a message missing an id can't crash
+        # the sort — it will simply float to the top.
+        all_messages.sort(key=lambda m: str(m.get('id', '')) if isinstance(m, dict) else '')
+
+        new_messages = [
+            m for m in all_messages
+            if isinstance(m, dict) and m.get('id') and m.get('id') not in existing_ids_set
+        ]
+
+        # --- Collect moderator IDs from new messages -----------------------
+        ids_from_new = set()
+        for msg in new_messages:
+            embeds = msg.get('embeds') or []
+            if not isinstance(embeds, list):
+                continue
+            for emb in embeds:
+                if not isinstance(emb, dict):
+                    continue
+                fields = emb.get('fields') or []
+                if not isinstance(fields, list):
+                    continue
+                for field in fields:
+                    if not isinstance(field, dict):
+                        continue
+                    fname = (field.get('name') or '').strip().lower()
+                    if fname in ('moderator', 'referee'):
+                        mid = _extract_mention_id(field.get('value'))
+                        if mid:
+                            ids_from_new.add(mid)
+
+        # Filter resolution targets down to plausible numeric Discord IDs —
+        # avoids spamming /users/Unknown (or similar) on every scrape.
+        ids_to_resolve = {
+            mid for mid in (ids_missing_name | ids_from_new)
+            if mid and str(mid).isdigit()
+        }
+
+        # --- Resolve names via the Discord Users API -----------------------
+        # One call per unique ID per scrape; results are written directly
+        # onto each record, so we never consult a shared name cache on the
+        # read path. IDs that fail to resolve stay ID-only and get retried
+        # on the next scrape.
+        name_by_id = {}
+        if ids_to_resolve:
+            total = len(ids_to_resolve)
+            _pd_set_text(f"Resolving moderator names (0/{total})...")
+
+            def _fetch_user_name(mid_: str):
+                u_req = urllib.request.Request(
+                    f'https://discord.com/api/v10/users/{mid_}',
+                    headers=headers,
+                )
+                with urllib.request.urlopen(u_req, timeout=10) as u_resp:
+                    raw = u_resp.read().decode('utf-8', errors='replace')
+                u_data = json.loads(raw)
+                if not isinstance(u_data, dict):
+                    return ''
+                return u_data.get('global_name') or u_data.get('username') or ''
+
+            for i, mid in enumerate(ids_to_resolve, start=1):
+                try:
+                    name = _fetch_user_name(mid)
+                    if name:
+                        name_by_id[mid] = name
+                except urllib.error.HTTPError as ue:
+                    if ue.code == 429:
+                        try:
+                            err_data = json.loads(ue.read().decode('utf-8', errors='replace'))
+                            retry_after = float(err_data.get('retry_after', 1.0))
+                        except Exception:
+                            retry_after = 1.0
+                        retry_after = max(0.0, min(retry_after, MAX_RETRY_AFTER))
+                        time.sleep(retry_after)
+                        try:
+                            name = _fetch_user_name(mid)
+                            if name:
+                                name_by_id[mid] = name
+                        except Exception:
+                            pass
+                    # 404 / other: silently skip; next scrape can retry
+                except Exception:
+                    # Network/JSON/etc — skip this id, keep going
+                    pass
+
+                _pd_set_text(f"Resolving moderator names ({i}/{total})...")
+                time.sleep(0.1)  # stays well below Discord's global rate limit
+
+        # --- Enrich legacy records in memory -------------------------------
+        legacy_changed = False
+        if name_by_id:
+            for rec in existing_records:
+                if not isinstance(rec, dict):
+                    continue  # malformed line preserved verbatim
+                raw_mid = rec.get('ModeratorID', '')
+                if not raw_mid or rec.get('ModeratorName', ''):
+                    continue
+                mid = _extract_mention_id(raw_mid)
+                if mid and mid in name_by_id:
+                    rec['ModeratorName'] = name_by_id[mid]
+                    legacy_changed = True
+
+        # --- Append new records --------------------------------------------
+        if new_messages:
+            try:
+                with open(DISCORD_LOG_FILE, 'a', encoding='utf-8') as f:
+                    for msg in new_messages:
+                        f.write(_serialize_discord_message(msg, name_by_id) + '\n')
+                _invalidate_log_cache()
+            except Exception as e:
+                _pd_close()
+                _err("Save Error", f"Could not write discordlogshistory:\n{str(e)}")
+                return
+
+        # --- Atomically rewrite log if legacy records were enriched --------
+        if legacy_changed:
+            _pd_set_text("Updating log file...")
+            tmp_path = DISCORD_LOG_FILE + '.tmp'
+            try:
+                with open(tmp_path, 'w', encoding='utf-8') as f:
+                    for rec in existing_records:
+                        if isinstance(rec, dict):
+                            f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+                        else:
+                            f.write(rec + '\n')
+                    # Append any newly-written records too, so the file stays
+                    # consistent with what we just appended above.
+                    for msg in new_messages:
+                        f.write(_serialize_discord_message(msg, name_by_id) + '\n')
+                os.replace(tmp_path, DISCORD_LOG_FILE)
+                _invalidate_log_cache()
+            except Exception as e:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+                _pd_close()
+                if silent:
+                    print(f"[SCRAPE] Log rewrite failed: {e}")
+                else:
+                    QMessageBox.warning(self, "Log Rewrite Failed",
+                                        f"Could not rewrite discordlogshistory to enrich "
+                                        f"legacy moderator names:\n{str(e)}\n\n"
+                                        f"New records were still appended successfully.")
+                return
+
+        _pd_close()
 
     def configure_console_key(self):
         """Prompt user to press the key used to open the in-game console and persist its VK code."""
@@ -1883,8 +2888,8 @@ class FirstToScoreboardWindow(QDialog):
         self.p2_score = 0
 
         main = QVBoxLayout(self)
-        main.setContentsMargins(20, 16, 20, 16)
-        main.setSpacing(12)
+        main.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
+        main.setSpacing(UI_SPACING_SECTION)
 
         # Title
         ttl = QLabel("Match Arbitration (First To)")
@@ -1898,6 +2903,8 @@ class FirstToScoreboardWindow(QDialog):
         settings_l.setLabelAlignment(Qt.AlignRight)
         settings_l.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
         settings_l.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        settings_l.setHorizontalSpacing(UI_SPACING_INNER)
+        settings_l.setVerticalSpacing(UI_PAD_TIGHT)
 
         self.rounds_input = QLineEdit()
         self.rounds_input.setPlaceholderText("e.g. 5")
@@ -1913,13 +2920,14 @@ class FirstToScoreboardWindow(QDialog):
         settings_l.addRow("End message:", self.win_msg_input)
 
         settings.setLayout(settings_l)
-        settings.layout().setContentsMargins(12, 8, 12, 8)
+        settings.layout().setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
         main.addWidget(settings)
 
         # Broadcast
         broadcast = QGroupBox("Broadcast")
         b_l = QVBoxLayout()
-        b_l.setContentsMargins(12, 8, 12, 8)
+        b_l.setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
+        b_l.setSpacing(UI_PAD_INNER)
 
         notification_row = QHBoxLayout()
 
@@ -1927,21 +2935,18 @@ class FirstToScoreboardWindow(QDialog):
         self.ft_discord_notification.setChecked(False)
 
         tag_row = QHBoxLayout()
+        tag_row.setSpacing(UI_PAD_TIGHT)
         tag_row.addWidget(QLabel("Tag prefix (optional):"))
         self.broadcast_tag_input = QLineEdit()
         self.broadcast_tag_input.setPlaceholderText("Tournament")
-        tip_icon_tag = QLabel("Tip")
-        tip_icon_tag.setToolTip("Brackets are added automatically")
-        tip_icon_tag.setFixedSize(30, 20)
-        tip_icon_tag.setAlignment(Qt.AlignCenter)
-        tip_icon_tag.setStyleSheet("QLabel { color: #888888; font-weight: bold; border: 1px solid #888888; border-radius: 8px; }")
-        tag_row.addWidget(tip_icon_tag, 0, Qt.AlignRight)
+        tag_row.addWidget(_make_tip_badge("Brackets are added automatically"), 0, Qt.AlignRight)
         tag_row.addWidget(self.broadcast_tag_input, 1)
         b_l.addLayout(tag_row)
 
         self.announce_start_btn = QPushButton("Announce the start of the match")
-        self.announce_start_btn.setMinimumHeight(40)
+        self.announce_start_btn.setMinimumHeight(38)
         self.announce_start_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.announce_start_btn.setStyleSheet(_colored_button_qss(UI_ACCENT))
         self.announce_start_btn.clicked.connect(self.announce_start)
         b_l.addWidget(self.announce_start_btn)
 
@@ -1956,19 +2961,26 @@ class FirstToScoreboardWindow(QDialog):
         players_grid = QGridLayout()
         players_grid.setColumnStretch(0, 1)
         players_grid.setColumnStretch(1, 1)
+        players_grid.setHorizontalSpacing(UI_SPACING_SECTION)
 
         def build_player(label_text: str):
             box = QGroupBox(label_text)
-            v = QVBoxLayout(); v.setContentsMargins(12, 8, 12, 8)
+            v = QVBoxLayout()
+            v.setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
+            v.setSpacing(UI_PAD_INNER)
             name_row = QHBoxLayout()
+            name_row.setSpacing(UI_PAD_TIGHT)
             name_row.addWidget(QLabel("Name:"))
-            name_edit = QLineEdit(); name_edit.setPlaceholderText(label_text)
+            name_edit = QLineEdit()
+            name_edit.setPlaceholderText(label_text)
             name_row.addWidget(name_edit, 1)
             v.addLayout(name_row)
 
             btn_row = QHBoxLayout()
-            add = QPushButton("Add 1 Point"); add.setMinimumHeight(40)
-            rem = QPushButton("Remove 1 Point"); rem.setMinimumHeight(40)
+            btn_row.setSpacing(UI_PAD_TIGHT)
+            add = QPushButton("Add 1 Point"); add.setMinimumHeight(38)
+            add.setStyleSheet(_colored_button_qss(UI_COLOR_UNBAN))
+            rem = QPushButton("Remove 1 Point"); rem.setMinimumHeight(38)
             btn_row.addWidget(add); btn_row.addWidget(rem)
             v.addLayout(btn_row)
 
@@ -1997,7 +3009,7 @@ class FirstToScoreboardWindow(QDialog):
 
         # bottom actions
         bottom = QHBoxLayout()
-        bottom.setStretch(1,1)
+        bottom.setSpacing(UI_SPACING_INNER)
         self.reset_score_btn = QPushButton("Reset score")
         self.reset_score_btn.setMinimumHeight(36)
         self.reset_score_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -2146,6 +3158,379 @@ class FirstToScoreboardWindow(QDialog):
             pass
         return False
 
+# ---- Discord log history (JSON Lines database) ----
+
+DISCORD_LOG_FILE = "discordlogshistory"
+
+# Module-level cache of parsed discordlogshistory.
+# Invalidated by (mtime, size); every helper that reads sanctions goes
+# through `_read_log_cached()` so the file is parsed at most once per
+# external mutation. Index views (`by_id`, `by_pid`) hold the same dict
+# references as `dicts`, not copies.
+#
+# Thread safety: the parse can run on a background warmup thread (see
+# `_warm_log_cache_async`) while UI-thread callers also hit the cache.
+# `_log_cache_lock` serializes parses; readers either get a cache hit
+# (lock-free fast path after the first load completes) or briefly block
+# on an in-progress parse instead of duplicating it on the UI thread.
+_log_cache_lock     = threading.Lock()
+# Held by an in-flight silent scrape; non-blocking acquire lets repeat
+# triggers (startup + per-action follow-ups) coalesce into a single run.
+_silent_scrape_lock = threading.Lock()
+_log_cache_key      = None   # (mtime, size) tuple, or None when unloaded
+_log_cache_records  = []     # list[dict | str]  — str preserves malformed lines verbatim
+_log_cache_dicts    = []     # list[dict]        — subset of _records (no malformed lines)
+_log_cache_by_id    = {}     # dict[id] -> record
+_log_cache_by_pid   = {}     # dict[playfab_upper] -> list[record]
+_log_warm_thread    = None   # daemon Thread currently warming the cache, or None
+
+
+def _read_log_cached():
+    """Return (records, dicts, by_id, by_pid) for discordlogshistory.
+
+    Re-parses from disk only when (mtime, size) has changed since the
+    previous load. Returned containers are the cache itself — callers
+    must treat them as read-only.
+
+    Thread-safe: a background warmup thread and the UI thread can both
+    call this; the lock ensures the file is parsed at most once.
+    """
+    global _log_cache_key, _log_cache_records, _log_cache_dicts
+    global _log_cache_by_id, _log_cache_by_pid
+
+    with _log_cache_lock:
+        if not os.path.exists(DISCORD_LOG_FILE):
+            if _log_cache_key is not None:
+                _log_cache_key     = None
+                _log_cache_records = []
+                _log_cache_dicts   = []
+                _log_cache_by_id   = {}
+                _log_cache_by_pid  = {}
+            return _log_cache_records, _log_cache_dicts, _log_cache_by_id, _log_cache_by_pid
+
+        try:
+            st = os.stat(DISCORD_LOG_FILE)
+        except OSError:
+            return _log_cache_records, _log_cache_dicts, _log_cache_by_id, _log_cache_by_pid
+
+        key = (st.st_mtime, st.st_size)
+        if key == _log_cache_key:
+            return _log_cache_records, _log_cache_dicts, _log_cache_by_id, _log_cache_by_pid
+
+        records = []
+        dicts   = []
+        by_id   = {}
+        by_pid  = {}
+        try:
+            with open(DISCORD_LOG_FILE, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        records.append(line)
+                        continue
+                    if not isinstance(rec, dict):
+                        records.append(line)
+                        continue
+                    # Intern keys so all records share one copy of each key
+                    # string instead of allocating fresh ones per line.
+                    rec = {sys.intern(k) if isinstance(k, str) else k: v for k, v in rec.items()}
+                    records.append(rec)
+                    dicts.append(rec)
+                    rid = rec.get('id')
+                    if rid:
+                        by_id[rid] = rec
+                    pid = rec.get('PlayFabID', '')
+                    if pid:
+                        by_pid.setdefault(pid.upper(), []).append(rec)
+        except Exception:
+            # Leave the previous cache in place on transient read failure.
+            return _log_cache_records, _log_cache_dicts, _log_cache_by_id, _log_cache_by_pid
+
+        _log_cache_key     = key
+        _log_cache_records = records
+        _log_cache_dicts   = dicts
+        _log_cache_by_id   = by_id
+        _log_cache_by_pid  = by_pid
+        return records, dicts, by_id, by_pid
+
+
+def _invalidate_log_cache() -> None:
+    """Force the next _read_log_cached() call to re-parse from disk.
+
+    Called after the scrape appends or rewrites the log file — the
+    write itself updates mtime, but invalidating explicitly avoids
+    relying on filesystem timestamp resolution.
+    """
+    global _log_cache_key
+    with _log_cache_lock:
+        _log_cache_key = None
+
+
+def _warm_log_cache_async() -> None:
+    """Warm the discord log cache on a daemon thread, off the UI thread.
+
+    Idempotent: if a warmup is already in flight, returns immediately.
+    The thread parses into the same cache UI-thread callers consult, so
+    by the time the user opens the dashboard the first cache hit is
+    near-free even with a multi-thousand-record history.
+
+    Safe to call before/during/after the waiting dialog. Daemon flag
+    means it cannot block app shutdown.
+    """
+    global _log_warm_thread
+    t = _log_warm_thread
+    if t is not None and t.is_alive():
+        return
+
+    def _run():
+        try:
+            _read_log_cached()
+        except Exception as e:
+            # Never let a warmup crash propagate — the UI fallbacks
+            # (synchronous read on first access) still work.
+            print(f"[CACHE] Warmup failed: {e}")
+
+    t = threading.Thread(target=_run, name="discord-log-cache-warmup", daemon=True)
+    _log_warm_thread = t
+    t.start()
+
+
+def _schedule_silent_discord_scrape(origin_widget, delay_ms: int = 2000) -> None:
+    """Fire a silent log scrape shortly after a webhook-triggered action.
+
+    Webhook delivery is usually sub-second but not instant, so we delay a
+    bit before scraping to let the just-sent message land in the target
+    channel. If no AdminDashboard is reachable from `origin_widget` (or
+    anywhere in the app), the call is a silent no-op — the manual
+    "Fetch Discord Channel Messages" button remains the fallback.
+    """
+    dashboard = None
+    w = origin_widget
+    while w is not None:
+        if isinstance(w, AdminDashboard):
+            dashboard = w
+            break
+        w = w.parent() if hasattr(w, 'parent') and callable(w.parent) else None
+
+    if dashboard is None:
+        for tlw in QApplication.topLevelWidgets():
+            if isinstance(tlw, AdminDashboard):
+                dashboard = tlw
+                break
+
+    if dashboard is None:
+        return
+
+    QTimer.singleShot(
+        max(0, int(delay_ms)),
+        lambda d=dashboard: d.fetch_discord_channel_messages(silent=True),
+    )
+
+
+_MENTION_ID_RE = re.compile(r'<@[!&]?(\d+)>')
+_DIGITS_RE = re.compile(r'\d+')
+_BOLD_RE = re.compile(r'(?:\*\*|__)([^*_]+?)(?:\*\*|__)')
+# Strips surrounding markdown (**, __, *, _) from a "Key" token.
+_MD_STRIP_RE = re.compile(r'^[\*_]+|[\*_]+$')
+
+
+def _extract_mention_id(raw) -> str:
+    """Return the numeric user id from a mention string, or '' if none.
+
+    Accepts <@id>, <@!id>, <@&id>, or a bare numeric id. Anything else
+    (including 'Unknown', empty, None) yields ''.
+    """
+    if not raw:
+        return ''
+    s = str(raw).strip()
+    m = _MENTION_ID_RE.search(s)
+    if m:
+        return m.group(1)
+    # Bare digits fallback (handles stored records that kept the raw id).
+    if s.isdigit():
+        return s
+    m = _DIGITS_RE.search(s)
+    return m.group(0) if m else ''
+
+
+# Core fields used to decide whether a freshly-fetched Discord message
+# is the "same record" as the one we already have on disk. Excludes
+# `ModeratorName`: that field is filled in by a separate /users/{id}
+# round-trip, so a cached record may have it while a freshly-extracted
+# one (no `name_by_id`) won't — comparing it would cause spurious
+# mismatches and defeat the early-stop optimisation.
+_SCRAPE_DUP_FIELDS = (
+    'id', 'timestamp', 'action', 'PlayFabID', 'Username',
+    'Reason', 'Duration', 'ModeratorID',
+)
+
+
+def _scrape_record_matches(msg: dict, cached: dict) -> bool:
+    """Whether a freshly-fetched Discord message would produce the same
+    sanction record as one already on disk (cached).
+
+    Used by the scrape pagination loop to detect the boundary between
+    new history and already-stored history without serializing through
+    JSON.
+    """
+    if not isinstance(cached, dict):
+        return False
+    fresh = _discord_message_to_record(msg)
+    for k in _SCRAPE_DUP_FIELDS:
+        if fresh.get(k, '') != cached.get(k, ''):
+            return False
+    return True
+
+
+def _discord_message_to_record(msg: dict, name_by_id: dict = None) -> dict:
+    """Extract the flat sanction record from a Discord webhook message.
+
+    See `_serialize_discord_message` for the field reference and parsing
+    rules. Split out so callers that need to *compare* messages (the
+    scrape's early-stop check) can avoid a JSON round-trip.
+    """
+    _ACTION_MAP = [
+        ('unban',    'unban'),     # check before 'ban' so 'unban' doesn't match 'ban'
+        ('ban',      'ban'),
+        ('kick',     'kick'),
+        ('warning',  'warn'),
+        ('warn',     'warn'),
+        ('first to', 'ft'),
+    ]
+
+    record = {
+        'id':            '',
+        'timestamp':     '',
+        'action':        '',
+        'PlayFabID':     '',
+        'Username':      '',
+        'Reason':        '',
+        'Duration':      '',
+        'ModeratorID':   '',
+        'ModeratorName': '',
+    }
+
+    try:
+        if not isinstance(msg, dict):
+            return record
+
+        record['id']        = str(msg.get('id', '') or '')
+        record['timestamp'] = str(msg.get('timestamp', '') or '')
+
+        embeds = msg.get('embeds') or []
+        if not isinstance(embeds, list):
+            embeds = []
+
+        def _parse_info_value(fvalue: str):
+            """Parse newline-delimited 'Key: Value' pairs into record fields."""
+            if not fvalue:
+                return
+            for line in str(fvalue).split('\n'):
+                line = line.strip()
+                if ':' not in line:
+                    continue
+                key, _, val = line.partition(':')
+                key = _MD_STRIP_RE.sub('', key.strip()).strip().lower()
+                val = val.strip().strip('`').strip()
+                # Strip wrapping markdown the field may carry (e.g. "** ABC **")
+                val = _MD_STRIP_RE.sub('', val).strip()
+                if not key:
+                    continue
+                if key == 'playfabid' and not record['PlayFabID']:
+                    record['PlayFabID'] = val
+                elif key == 'username' and not record['Username']:
+                    record['Username'] = val
+                elif key == 'reason' and not record['Reason']:
+                    record['Reason'] = val
+                elif key == 'duration' and not record['Duration']:
+                    record['Duration'] = val
+
+        for emb in embeds:
+            if not isinstance(emb, dict):
+                continue
+
+            # Derive action from embed description. Falls back to scanning
+            # title if description is empty.
+            desc = (emb.get('description') or '') + ' ' + (emb.get('title') or '')
+            if desc.strip() and not record['action']:
+                # Prefer bold-delimited tokens, but also scan the raw
+                # description if no bold is present.
+                bold_tokens = [m.group(1).lower() for m in _BOLD_RE.finditer(desc)]
+                scan_sources = bold_tokens + [desc.lower()]
+                for source in scan_sources:
+                    matched = False
+                    for key, val in _ACTION_MAP:
+                        if key in source:
+                            record['action'] = val
+                            matched = True
+                            break
+                    if matched:
+                        break
+
+            fields = emb.get('fields') or []
+            if not isinstance(fields, list):
+                continue
+
+            for field in fields:
+                if not isinstance(field, dict):
+                    continue
+                fname = (field.get('name') or '').strip().lower()
+                fvalue = field.get('value')
+                if fvalue is None:
+                    fvalue = ''
+
+                if fname in ('information', 'results'):
+                    _parse_info_value(fvalue)
+                elif fname in ('moderator', 'referee'):
+                    mid = _extract_mention_id(fvalue)
+                    if mid:
+                        record['ModeratorID'] = mid
+                        if name_by_id and mid in name_by_id:
+                            record['ModeratorName'] = name_by_id[mid]
+                else:
+                    # Fallback: field name differs from what we expect but
+                    # the value still looks like key/value pairs.
+                    if ':' in str(fvalue) and any(
+                        k in str(fvalue).lower()
+                        for k in ('playfabid', 'username', 'reason', 'duration')
+                    ):
+                        _parse_info_value(fvalue)
+    except Exception:
+        # Never let a single weird message break the whole scrape.
+        pass
+
+    return record
+
+
+def _serialize_discord_message(msg: dict, name_by_id: dict = None) -> str:
+    """Serialize a single Discord webhook message to a flat JSON line.
+
+    Stored fields: id, timestamp, action, PlayFabID, Username, Reason,
+                   Duration, ModeratorID, ModeratorName
+
+    Action is extracted from the bold word(s) in the embed description:
+      "A **ban** has been executed"     -> ban
+      "An **unban** has been executed"  -> unban
+      "A **kick** has been executed"    -> kick
+      "A **warning** has been issued"   -> warn
+      "A **First To** match ..."        -> ft
+
+    If `name_by_id` is provided and contains the extracted moderator ID,
+    the corresponding display name is baked into the record as
+    `ModeratorName` so the read path never needs a separate cache.
+
+    Intentionally tolerant of minor format drift: field names are matched
+    case-insensitively, bold markers may be ** or __, and key/value lines
+    may have surrounding markdown. Any unexpected structure falls through
+    and produces a record with empty fields rather than raising.
+    """
+    return json.dumps(_discord_message_to_record(msg, name_by_id), ensure_ascii=False)
+
+
 # ---- Persistent last-used parameters (ban/kick/admin/server/add time) ----
 
 def read_localconfig_lines():
@@ -2178,14 +3563,25 @@ def write_localconfig_lines(lines):
 # 17: last admin message
 # 18: last server message
 # 19: last add-time minutes
+# 20..22: admin message presets (3)
+# 23..25: server message presets (3)
+# 26: console virtual key code
+# 27: discord bot token (for channel scraping)
+# 28: discord channel id (for channel scraping)
 PERSIST_INDEX = {
-    'last_ban_reason': 14,
+    'primary_webhook':   0,
+    'secondary_webhook': 1,
+    'discord_user_id':   2,
+    'theme':             13,
+    'last_ban_reason':   14,
     'last_ban_duration': 15,
-    'last_kick_reason': 16,
-    'last_admin_msg': 17,
-    'last_server_msg': 18,
-    'last_add_time': 19,
-    'console_vk': 26,
+    'last_kick_reason':  16,
+    'last_admin_msg':    17,
+    'last_server_msg':   18,
+    'last_add_time':     19,
+    'console_vk':        26,
+    'discord_bot_token': 27,
+    'discord_channel_id':28,
 }
 
 
@@ -2249,386 +3645,418 @@ def set_server_preset(slot: int, value: str) -> None:
     _set_text_preset(SERVER_PRESET_BASE_INDEX, slot, value)
 
 
+_theme_cache = None  # module-level cache: None | True (dark) | False (light)
+
+
 def load_theme_preference():
-    """Load theme preference from localconfig file"""
-    import os
-    localconfig = "localconfig"
-    if os.path.exists(localconfig):
-        try:
-            with open(localconfig, 'r', encoding='utf-8') as f:
-                lines = f.read().strip().split('\n')
-                # Theme preference is stored on line 14 (index 13)
-                if len(lines) >= 14 and lines[13].strip():
-                    return lines[13].strip().lower() == 'dark'
-        except Exception:
-            pass
-    return True  # Default to dark theme
+    """Return True for dark, False for light. Defaults to dark.
+
+    Result is cached so frequent callers (e.g. sanction card construction)
+    avoid re-reading localconfig on every invocation. Invalidated
+    automatically on save_theme_preference().
+    """
+    global _theme_cache
+    if _theme_cache is None:
+        val = (get_persisted_value('theme', 'dark') or 'dark').strip().lower()
+        _theme_cache = (val != 'light')
+    return _theme_cache
+
 
 def save_theme_preference(is_dark_theme):
-    """Save theme preference to localconfig file"""
-    import os
-    localconfig = "localconfig"
+    """Persist theme and refresh the module-level cache."""
+    global _theme_cache
+    _theme_cache = bool(is_dark_theme)
+    set_persisted_value('theme', 'dark' if is_dark_theme else 'light')
+    _theme_bus.theme_changed.emit(_theme_cache)
 
-    # Read existing configuration
-    lines = ['None'] * 14  # Initialize with 14 lines
-    if os.path.exists(localconfig):
-        try:
-            with open(localconfig, 'r', encoding='utf-8') as f:
-                existing_lines = f.read().strip().split('\n')
-                for i, line in enumerate(existing_lines):
-                    if i < 14:
-                        lines[i] = line
-        except Exception:
-            pass
 
-    # Set theme preference on line 14 (index 13)
-    lines[13] = 'dark' if is_dark_theme else 'light'
+def _build_stylesheet(palette: dict) -> str:
+    """Build the app-wide QSS from a palette dict.
 
-    # Write back to file
-    try:
-        with open(localconfig, 'w', encoding='utf-8') as f:
-            for line in lines:
-                f.write(f"{line}\n")
-    except Exception as e:
-        print(f"[THEME] Failed to save theme preference: {e}")
+    Both themes share identical structure; only the colour values differ.
+    Keeping one builder means visual changes happen in one place.
+    """
+    p = palette
+    return f"""
+    /* ── Base ──────────────────────────────────────────────────────── */
+    QWidget {{
+        background-color: {p['bg']};
+        color: {p['fg']};
+        selection-background-color: {p['accent']};
+        selection-color: #ffffff;
+    }}
+    QDialog, QMessageBox, QInputDialog {{
+        background-color: {p['bg']};
+        color: {p['fg']};
+    }}
+
+    /* ── Group boxes ───────────────────────────────────────────────── */
+    QGroupBox {{
+        background-color: {p['surface']};
+        border: 1px solid {p['border']};
+        border-radius: {UI_RADIUS}px;
+        margin-top: 14px;
+        padding: 14px 10px 10px 10px;
+        font-weight: 600;
+        color: {p['fg']};
+    }}
+    QGroupBox::title {{
+        subcontrol-origin: margin;
+        subcontrol-position: top left;
+        left: 12px;
+        padding: 0 6px;
+        color: {p['fg_muted']};
+        background-color: {p['surface']};
+    }}
+
+    /* ── Buttons ───────────────────────────────────────────────────── */
+    QPushButton {{
+        background-color: {p['btn_bg']};
+        border: 1px solid {p['btn_border']};
+        border-radius: {UI_RADIUS_SMALL}px;
+        padding: 7px 14px;
+        color: {p['fg']};
+        font-weight: 600;
+        min-height: 20px;
+    }}
+    QPushButton:hover {{
+        background-color: {p['btn_bg_hover']};
+        border: 1px solid {p['btn_border_hover']};
+    }}
+    QPushButton:pressed {{
+        background-color: {p['btn_bg_pressed']};
+    }}
+    QPushButton:focus {{
+        outline: none;
+        border: 1px solid {p['accent']};
+    }}
+    QPushButton:disabled {{
+        background-color: {p['btn_bg_disabled']};
+        color: {p['fg_disabled']};
+        border: 1px solid {p['border']};
+    }}
+
+    /* ── Inputs ────────────────────────────────────────────────────── */
+    QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
+        background-color: {p['input_bg']};
+        border: 1px solid {p['border']};
+        border-radius: {UI_RADIUS_SMALL}px;
+        padding: 6px 8px;
+        color: {p['fg']};
+        selection-background-color: {p['accent']};
+        selection-color: #ffffff;
+    }}
+    QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus,
+    QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
+        border: 1px solid {p['accent']};
+    }}
+    QLineEdit:disabled, QTextEdit:disabled, QPlainTextEdit:disabled {{
+        background-color: {p['input_bg_disabled']};
+        color: {p['fg_disabled']};
+    }}
+    QLineEdit[readOnly="true"] {{
+        background-color: {p['input_bg_readonly']};
+        color: {p['fg_muted']};
+    }}
+
+    QComboBox::drop-down {{
+        border: none;
+        width: 20px;
+    }}
+    QComboBox QAbstractItemView {{
+        background-color: {p['surface']};
+        border: 1px solid {p['border']};
+        selection-background-color: {p['accent']};
+        selection-color: #ffffff;
+    }}
+
+    /* ── Check boxes ───────────────────────────────────────────────── */
+    QCheckBox {{
+        spacing: 8px;
+        color: {p['fg']};
+    }}
+    QCheckBox::indicator {{
+        width: 16px;
+        height: 16px;
+        border: 1px solid {p['border']};
+        border-radius: 3px;
+        background-color: {p['input_bg']};
+    }}
+    QCheckBox::indicator:hover {{
+        border: 1px solid {p['accent']};
+    }}
+    QCheckBox::indicator:checked {{
+        background-color: {p['accent']};
+        border: 1px solid {p['accent']};
+        image: none;
+    }}
+    QCheckBox::indicator:disabled {{
+        background-color: {p['input_bg_disabled']};
+        border: 1px solid {p['border']};
+    }}
+
+    /* ── Labels ────────────────────────────────────────────────────── */
+    QLabel {{
+        color: {p['fg']};
+        background-color: transparent;
+    }}
+
+    /* ── List widgets ──────────────────────────────────────────────── */
+    QListWidget {{
+        background-color: {p['surface']};
+        border: 1px solid {p['border']};
+        border-radius: {UI_RADIUS_SMALL}px;
+        color: {p['fg']};
+        selection-background-color: {p['accent']};
+        selection-color: #ffffff;
+        alternate-background-color: {p['surface_alt']};
+        outline: 0;
+    }}
+    QListWidget::item {{
+        padding: 7px 8px;
+        border-bottom: 1px solid {p['row_sep']};
+    }}
+    QListWidget::item:selected {{
+        background-color: {p['accent']};
+        color: #ffffff;
+    }}
+    QListWidget::item:hover {{
+        background-color: {p['row_hover']};
+    }}
+
+    /* ── Progress bars ─────────────────────────────────────────────── */
+    QProgressBar {{
+        background-color: {p['surface']};
+        border: 1px solid {p['border']};
+        border-radius: {UI_RADIUS_SMALL}px;
+        text-align: center;
+        color: {p['fg']};
+        min-height: 18px;
+    }}
+    QProgressBar::chunk {{
+        background-color: {p['accent']};
+        border-radius: 3px;
+    }}
+
+    /* ── Dialog button box ─────────────────────────────────────────── */
+    QDialogButtonBox {{
+        button-layout: 2;
+    }}
+    QDialogButtonBox QPushButton {{
+        min-width: 96px;
+    }}
+    QMessageBox QPushButton {{
+        min-width: 80px;
+        min-height: 26px;
+    }}
+
+    /* ── Tool tips ─────────────────────────────────────────────────── */
+    QToolTip {{
+        background-color: {p['tooltip_bg']};
+        color: {p['tooltip_fg']};
+        border: 1px solid {p['border']};
+        border-radius: {UI_RADIUS_SMALL}px;
+        padding: 5px 8px;
+    }}
+
+    /* ── Scroll bars ───────────────────────────────────────────────── */
+    QScrollBar:vertical {{
+        background-color: {p['scroll_track']};
+        width: 11px;
+        border-radius: 5px;
+        margin: 0;
+    }}
+    QScrollBar::handle:vertical {{
+        background-color: {p['scroll_handle']};
+        border-radius: 5px;
+        min-height: 24px;
+    }}
+    QScrollBar::handle:vertical:hover {{
+        background-color: {p['scroll_handle_hover']};
+    }}
+    QScrollBar:horizontal {{
+        background-color: {p['scroll_track']};
+        height: 11px;
+        border-radius: 5px;
+        margin: 0;
+    }}
+    QScrollBar::handle:horizontal {{
+        background-color: {p['scroll_handle']};
+        border-radius: 5px;
+        min-width: 24px;
+    }}
+    QScrollBar::handle:horizontal:hover {{
+        background-color: {p['scroll_handle_hover']};
+    }}
+    QScrollBar::add-line, QScrollBar::sub-line {{
+        border: none;
+        background: none;
+        width: 0;
+        height: 0;
+    }}
+    QScrollBar::add-page, QScrollBar::sub-page {{
+        background: none;
+    }}
+
+    /* ── Scroll area ───────────────────────────────────────────────── */
+    QScrollArea {{
+        background-color: transparent;
+        border: none;
+    }}
+    """
+
 
 def apply_dark_theme(app):
     """Apply a dark theme to the entire application"""
-    dark_stylesheet = """
-    /* Main application styling */
-    QApplication {
-        background-color: #2b2b2b;
-        color: #ffffff;
+    palette = {
+        'bg':                   '#262626',
+        'surface':              '#2f2f2f',
+        'surface_alt':          '#383838',
+        'border':               '#4a4a4a',
+        'row_sep':              '#3d3d3d',
+        'row_hover':            '#3a3a3a',
+        'fg':                   '#ececec',
+        'fg_muted':             '#b8b8b8',
+        'fg_disabled':          '#6a6a6a',
+        'accent':               UI_ACCENT,
+        'btn_bg':               '#3a3a3a',
+        'btn_bg_hover':         '#464646',
+        'btn_bg_pressed':       '#2e2e2e',
+        'btn_bg_disabled':      '#2a2a2a',
+        'btn_border':           '#555555',
+        'btn_border_hover':     '#6a6a6a',
+        'input_bg':             '#383838',
+        'input_bg_disabled':    '#2e2e2e',
+        'input_bg_readonly':    '#333333',
+        'tooltip_bg':           '#1f1f1f',
+        'tooltip_fg':           '#ececec',
+        'scroll_track':         '#2f2f2f',
+        'scroll_handle':        '#5a5a5a',
+        'scroll_handle_hover':  '#707070',
     }
-
-    /* Main windows and dialogs */
-    QWidget {
-        background-color: #2b2b2b;
-        color: #ffffff;
-        selection-background-color: #3d5afe;
-    }
-
-    /* Group boxes */
-    QGroupBox {
-        background-color: #353535;
-        border: 2px solid #555555;
-        border-radius: 8px;
-        margin-top: 1ex;
-        padding-top: 10px;
-        font-weight: bold;
-        color: #ffffff;
-    }
-
-    QGroupBox::title {
-        subcontrol-origin: margin;
-        left: 10px;
-        padding: 0 8px 0 8px;
-        color: #ffffff;
-        background-color: #353535;
-    }
-
-    /* Buttons */
-    QPushButton {
-        background-color: #404040;
-        border: 1px solid #606060;
-        border-radius: 4px;
-        padding: 8px 16px;
-        color: #ffffff;
-        font-weight: bold;
-        min-height: 20px;
-    }
-
-    QPushButton:hover {
-        background-color: #505050;
-        border: 1px solid #707070;
-    }
-
-    QPushButton:pressed {
-        background-color: #303030;
-        border: 1px solid #505050;
-    }
-
-    QPushButton:disabled {
-        background-color: #2a2a2a;
-        color: #666666;
-        border: 1px solid #404040;
-    }
-
-    /* Input fields */
-    QLineEdit {
-        background-color: #404040;
-        border: 2px solid #606060;
-        border-radius: 4px;
-        padding: 8px;
-        color: #ffffff;
-        selection-background-color: #3d5afe;
-    }
-
-    QLineEdit:focus {
-        border: 2px solid #3d5afe;
-    }
-
-    /* Labels */
-    QLabel {
-        color: #ffffff;
-        background-color: transparent;
-    }
-
-    /* List widgets */
-    QListWidget {
-        background-color: #353535;
-        border: 1px solid #606060;
-        border-radius: 4px;
-        color: #ffffff;
-        selection-background-color: #3d5afe;
-        alternate-background-color: #404040;
-    }
-
-    QListWidget::item {
-        padding: 8px;
-        border-bottom: 1px solid #505050;
-    }
-
-    QListWidget::item:selected {
-        background-color: #3d5afe;
-        color: #ffffff;
-    }
-
-    QListWidget::item:hover {
-        background-color: #454545;
-    }
-
-    /* Progress bars */
-    QProgressBar {
-        background-color: #404040;
-        border: 1px solid #606060;
-        border-radius: 4px;
-        text-align: center;
-        color: #ffffff;
-    }
-
-    QProgressBar::chunk {
-        background-color: #3d5afe;
-        border-radius: 3px;
-    }
-
-    /* Dialogs */
-    QDialog {
-        background-color: #2b2b2b;
-        color: #ffffff;
-    }
-
-    /* Message boxes */
-    QMessageBox {
-        background-color: #2b2b2b;
-        color: #ffffff;
-    }
-
-    QMessageBox QPushButton {
-        min-width: 80px;
-        min-height: 25px;
-    }
-
-    /* Input dialogs */
-    QInputDialog {
-        background-color: #2b2b2b;
-        color: #ffffff;
-    }
-
-    /* Scroll bars */
-    QScrollBar:vertical {
-        background-color: #404040;
-        width: 12px;
-        border-radius: 6px;
-    }
-
-    QScrollBar::handle:vertical {
-        background-color: #606060;
-        border-radius: 6px;
-        min-height: 20px;
-    }
-
-    QScrollBar::handle:vertical:hover {
-        background-color: #707070;
-    }
-
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-        border: none;
-        background: none;
-    }
-    """
-
-    app.setStyleSheet(dark_stylesheet)
+    app.setStyleSheet(_build_stylesheet(palette))
 
 def apply_light_theme(app):
     """Apply a light theme to the entire application"""
-    light_stylesheet = """
-    /* Main application styling */
-    QApplication {
-        background-color: #f5f5f5;
-        color: #333333;
+    palette = {
+        'bg':                   '#f4f5f7',
+        'surface':              '#ffffff',
+        'surface_alt':          '#f7f8fa',
+        'border':               '#d0d4d9',
+        'row_sep':              '#ececec',
+        'row_hover':            '#eff2f6',
+        'fg':                   '#2c2f33',
+        'fg_muted':             '#6a6f75',
+        'fg_disabled':          '#a8acb0',
+        'accent':               UI_ACCENT,
+        'btn_bg':               '#ffffff',
+        'btn_bg_hover':         '#f1f3f6',
+        'btn_bg_pressed':       '#e6e9ed',
+        'btn_bg_disabled':      '#f6f7f8',
+        'btn_border':           '#c5cad0',
+        'btn_border_hover':     '#a8aeb5',
+        'input_bg':             '#ffffff',
+        'input_bg_disabled':    '#f1f2f4',
+        'input_bg_readonly':    '#f7f8fa',
+        'tooltip_bg':           '#2c2f33',
+        'tooltip_fg':           '#ffffff',
+        'scroll_track':         '#ececec',
+        'scroll_handle':        '#c2c7cc',
+        'scroll_handle_hover':  '#9ea4ab',
     }
+    app.setStyleSheet(_build_stylesheet(palette))
 
-    /* Main windows and dialogs */
-    QWidget {
-        background-color: #f5f5f5;
-        color: #333333;
-        selection-background-color: #3d5afe;
-    }
+def _show_release_notes_dialog(parent, release_tag):
+    """Fetch and display GitHub release notes for the given tag in a modal dialog.
 
-    /* Group boxes */
-    QGroupBox {
-        background-color: #ffffff;
-        border: 2px solid #cccccc;
-        border-radius: 8px;
-        margin-top: 1ex;
-        padding-top: 10px;
-        font-weight: bold;
-        color: #333333;
-    }
-
-    QGroupBox::title {
-        subcontrol-origin: margin;
-        left: 10px;
-        padding: 0 8px 0 8px;
-        color: #333333;
-        background-color: #ffffff;
-    }
-
-    /* Buttons */
-    QPushButton {
-        background-color: #ffffff;
-        border: 1px solid #cccccc;
-        border-radius: 4px;
-        padding: 8px 16px;
-        color: #333333;
-        font-weight: bold;
-        min-height: 20px;
-    }
-
-    QPushButton:hover {
-        background-color: #f0f0f0;
-        border: 1px solid #999999;
-    }
-
-    QPushButton:pressed {
-        background-color: #e0e0e0;
-        border: 1px solid #888888;
-    }
-
-    QPushButton:disabled {
-        background-color: #f8f8f8;
-        color: #999999;
-        border: 1px solid #dddddd;
-    }
-
-    /* Input fields */
-    QLineEdit {
-        background-color: #ffffff;
-        border: 2px solid #cccccc;
-        border-radius: 4px;
-        padding: 8px;
-        color: #333333;
-        selection-background-color: #3d5afe;
-    }
-
-    QLineEdit:focus {
-        border: 2px solid #3d5afe;
-    }
-
-    /* Labels */
-    QLabel {
-        color: #333333;
-        background-color: transparent;
-    }
-
-    /* List widgets */
-    QListWidget {
-        background-color: #ffffff;
-        border: 1px solid #cccccc;
-        border-radius: 4px;
-        color: #333333;
-        selection-background-color: #3d5afe;
-        alternate-background-color: #f8f8f8;
-    }
-
-    QListWidget::item {
-        padding: 8px;
-        border-bottom: 1px solid #eeeeee;
-    }
-
-    QListWidget::item:selected {
-        background-color: #3d5afe;
-        color: #ffffff;
-    }
-
-    QListWidget::item:hover {
-        background-color: #f0f0f0;
-    }
-
-    /* Progress bars */
-    QProgressBar {
-        background-color: #ffffff;
-        border: 1px solid #cccccc;
-        border-radius: 4px;
-        text-align: center;
-        color: #333333;
-    }
-
-    QProgressBar::chunk {
-        background-color: #3d5afe;
-        border-radius: 3px;
-    }
-
-    /* Dialogs */
-    QDialog {
-        background-color: #f5f5f5;
-        color: #333333;
-    }
-
-    /* Message boxes */
-    QMessageBox {
-        background-color: #f5f5f5;
-        color: #333333;
-    }
-
-    QMessageBox QPushButton {
-        min-width: 80px;
-        min-height: 25px;
-    }
-
-    /* Input dialogs */
-    QInputDialog {
-        background-color: #f5f5f5;
-        color: #333333;
-    }
-
-    /* Scroll bars */
-    QScrollBar:vertical {
-        background-color: #f0f0f0;
-        width: 12px;
-        border-radius: 6px;
-    }
-
-    QScrollBar::handle:vertical {
-        background-color: #cccccc;
-        border-radius: 6px;
-        min-height: 20px;
-    }
-
-    QScrollBar::handle:vertical:hover {
-        background-color: #999999;
-    }
-
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-        border: none;
-        background: none;
-    }
+    On fetch failure (offline, GitHub unreachable, 404), shows a minimal fallback
+    dialog with a clickable link to the release page so the user can view notes
+    manually when back online.
     """
+    import urllib.request
+    from PyQt5.QtWidgets import QTextBrowser
 
-    app.setStyleSheet(light_stylesheet)
+    try:
+        from core.autoupdater import GITHUB_REPO
+    except Exception:
+        GITHUB_REPO = "Lionkjgame1219/Chiv2AdminDashboard"
+
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/{release_tag}"
+    web_url = f"https://github.com/{GITHUB_REPO}/releases/tag/{release_tag}"
+
+    body = None
+    title = release_tag
+    try:
+        req = urllib.request.Request(
+            api_url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "Chiv2AdminDashboard",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        title = data.get("name") or data.get("tag_name") or release_tag
+        body = (data.get("body") or "").strip()
+    except Exception as e:
+        print(f"[POST-UPDATE] Failed to fetch release notes for {release_tag}: {e}")
+
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(f"What's new — {title}")
+    layout = QVBoxLayout(dlg)
+    layout.setContentsMargins(15, 15, 15, 15)
+    layout.setSpacing(10)
+
+    header = QLabel(f"<h2 style='margin:0'>{title}</h2>")
+    layout.addWidget(header)
+
+    if body is None:
+        dlg.resize(520, 200)
+        msg = QLabel(
+            f"Release <b>{release_tag}</b> has been installed.<br><br>"
+            f"Release notes couldn't be fetched right now (you may be offline "
+            f"or GitHub is unreachable).<br><br>"
+            f"You can view them here once you're back online:<br>"
+            f'<a href="{web_url}">{web_url}</a>'
+        )
+        msg.setWordWrap(True)
+        msg.setOpenExternalLinks(True)
+        msg.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        layout.addWidget(msg)
+        layout.addStretch(1)
+    else:
+        dlg.resize(640, 500)
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(True)
+        text = body if body else "_No release notes provided for this release._"
+        # setMarkdown requires Qt >= 5.14; fall back to plain text otherwise.
+        try:
+            browser.setMarkdown(text)
+        except (AttributeError, TypeError):
+            browser.setPlainText(text)
+        layout.addWidget(browser)
+
+    btns = QDialogButtonBox(QDialogButtonBox.Ok)
+    btns.accepted.connect(dlg.accept)
+    layout.addWidget(btns)
+
+    dlg.exec_()
+
 
 def main():
+    # Parse (and strip) --post-update=<tag> before any update checks, so this
+    # flag can never propagate into a subsequent update's passthrough argv.
+    post_update_tag = None
+    _filtered_argv = []
+    for _a in sys.argv:
+        if _a.startswith("--post-update="):
+            _val = _a.split("=", 1)[1]
+            if _val:
+                post_update_tag = _val
+        else:
+            _filtered_argv.append(_a)
+    sys.argv[:] = _filtered_argv
+
     # ---- Auto-update (Windows packaged .exe only) ----
     # If an update is available, a temporary updater copy of this executable is spawned,
     # this process exits, the updater replaces the old .exe, and then relaunches the app.
@@ -2694,12 +4122,17 @@ def main():
     app._instant_tt = InstantToolTipFilter(delay_ms=300)
     app.installEventFilter(app._instant_tt)
 
-
     is_dark_theme = load_theme_preference()
     if is_dark_theme:
         apply_dark_theme(app)
     else:
         apply_light_theme(app)
+
+    # Start parsing the discord log into the cache on a daemon thread now,
+    # so it overlaps with theme setup, the waiting dialog, webhook init,
+    # and dashboard construction. Idempotent — calling it again from
+    # ChivalryWaitingDialog.__init__ is a no-op when this one is in flight.
+    _warm_log_cache_async()
 
     if "--no-wait" not in sys.argv and not check_chivalry_window():
         waiting_dialog = ChivalryWaitingDialog()
@@ -2716,8 +4149,29 @@ def main():
     else:
         print("[STARTUP] Discord webhooks not configured or failed to initialize")
 
+    # File presence check only — entry count comes from the cache once the
+    # background warmup thread finishes, so startup never blocks on parse.
+    if os.path.exists(DISCORD_LOG_FILE):
+        print("[STARTUP] Discord logs history file found — parsing in background")
+    else:
+        print("[STARTUP] Discord logs history file not found — will be created on first scrape")
+
     window = AdminDashboard()
     window.show()
+
+    # Kick off a silent Discord log scrape once the dashboard is up so the
+    # local history file is refreshed without any user action.
+    _schedule_silent_discord_scrape(window)
+
+    # Post-update "What's new?" banner: fires only on the first launch after
+    # the autoupdater applied a new release (the flag was already consumed at
+    # the top of main() and removed from sys.argv).
+    if post_update_tag:
+        try:
+            _show_release_notes_dialog(window, post_update_tag)
+        except Exception as e:
+            print(f"[POST-UPDATE] Release notes dialog failed: {e}")
+
     sys.exit(app.exec_())
 
 if __name__ == "__main__":

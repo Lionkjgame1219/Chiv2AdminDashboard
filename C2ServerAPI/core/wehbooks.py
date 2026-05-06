@@ -48,6 +48,61 @@ def get_webhook_urls():
 
     return config['primary_url'], config['secondary_url']
 
+def prompt_bot_config_dialogs(parent=None):
+    """Prompt for Discord bot token + channel ID used for channel log scraping.
+
+    Returns (bot_token_str, bot_channel_id_str) using a tri-state convention:
+      ""       -> user dismissed the dialog (treat as not-yet-prompted)
+      "None"   -> user accepted the dialog but left the field empty
+      "<val>"  -> configured
+    """
+    token_input, ok = QInputDialog.getText(
+        parent,
+        "Initial Setup - Discord Bot Token",
+        "Please enter your Discord Bot Token (used for channel log scraping):\n"
+        "(Discord Developer Portal > Your Application > Bot > Token)\n"
+        "(Leave empty to skip)",
+        text=""
+    )
+
+    if not ok:
+        return "", ""
+
+    token_stripped = token_input.strip()
+    bot_token = token_stripped if token_stripped else "None"
+
+    # No token -> no point asking for a channel ID.
+    if not token_stripped:
+        return bot_token, "None"
+
+    channel_input, ok2 = QInputDialog.getText(
+        parent,
+        "Initial Setup - Discord Channel ID",
+        "Please enter the Discord Channel ID to scrape:\n"
+        "(Right-click the channel in Discord > Copy Channel ID)\n"
+        "(Developer Mode must be enabled in Discord settings)\n"
+        "(Leave empty to skip)",
+        text=""
+    )
+
+    if not ok2:
+        return bot_token, "None"
+
+    channel_stripped = channel_input.strip()
+    if not channel_stripped:
+        return bot_token, "None"
+
+    if not channel_stripped.isdigit():
+        QMessageBox.warning(
+            parent,
+            "Invalid Channel ID",
+            "Channel ID must be a numeric value. Channel ID not saved."
+        )
+        return bot_token, "None"
+
+    return bot_token, channel_stripped
+
+
 def prompt_for_initial_setup():
     """Prompt user for initial webhook and Discord ID setup"""
     app = QApplication.instance()
@@ -86,6 +141,8 @@ def prompt_for_initial_setup():
         primary_url = primary_url if primary_url else None
         secondary_url = None
         discord_user_id = None
+        bot_token = ""         # "" = never asked (user skipped primary webhook)
+        bot_channel_id = ""
 
         if primary_url:
             secondary_url_input, ok2 = QInputDialog.getText(
@@ -121,7 +178,10 @@ def prompt_for_initial_setup():
             if ok3:
                 discord_user_id = discord_user_id.strip() if discord_user_id.strip() else None
 
-        save_initial_config(primary_url, secondary_url, discord_user_id)
+            # Mirror the webhook / user_id flow: prompt for bot token + channel ID last.
+            bot_token, bot_channel_id = prompt_bot_config_dialogs()
+
+        save_initial_config(primary_url, secondary_url, discord_user_id, bot_token, bot_channel_id)
 
         return primary_url, secondary_url
 
@@ -129,17 +189,28 @@ def prompt_for_initial_setup():
         if temp_app:
             app.quit()
 
-def save_initial_config(primary_url, secondary_url, discord_user_id):
-    """Save initial configuration to localconfig file"""
+def save_initial_config(primary_url, secondary_url, discord_user_id,
+                        bot_token="", bot_channel_id=""):
+    """Save initial configuration to localconfig file.
+
+    bot_token / bot_channel_id are written verbatim:
+      ""     -> never asked (blank line preserved for later prompts)
+      "None" -> asked and skipped
+      other  -> configured
+    """
     localconfig = "localconfig"
     try:
         with open(localconfig, 'w', encoding='utf-8') as f:
-            f.write(f"{primary_url if primary_url else 'None'}\n")
-            f.write(f"{secondary_url if secondary_url else 'None'}\n")
-            f.write(f"{discord_user_id if discord_user_id else 'None'}\n")
-            for _ in range(10):
+            f.write(f"{primary_url if primary_url else 'None'}\n")         # 0
+            f.write(f"{secondary_url if secondary_url else 'None'}\n")     # 1
+            f.write(f"{discord_user_id if discord_user_id else 'None'}\n") # 2
+            for _ in range(10):                                            # 3-12 presets
                 f.write("\n")
-            f.write("dark\n")
+            f.write("dark\n")                                              # 13 theme
+            for _ in range(13):                                            # 14-26
+                f.write("\n")
+            f.write(f"{bot_token}\n")                                      # 27
+            f.write(f"{bot_channel_id}\n")                                 # 28
     except Exception as e:
         QMessageBox.warning(
             None,
@@ -231,6 +302,15 @@ def MessageForAdmin(user_id, username, reason, duration_or_msg, category):
 
     elif category == "kick":
         embed.description = "A **kick** has been executed"
+        embed.add_field(
+            name="Information",
+            value=f"\nPlayFabID: {user_id}\nUsername: {username}\nReason: {reason}",
+            inline=False
+        )
+
+    elif category == "warn":
+        embed.color = 0xD4AC0D
+        embed.description = "A **warning** has been issued"
         embed.add_field(
             name="Information",
             value=f"\nPlayFabID: {user_id}\nUsername: {username}\nReason: {reason}",
