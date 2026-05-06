@@ -14,6 +14,7 @@ import json
 import datetime
 import win32gui
 import re
+import threading
 
 
 from core.C2ServerAPIExample import GameChivalry
@@ -204,6 +205,11 @@ class ChivalryWaitingDialog(QDialog):
         self.timer.start(1000)
 
         self.update_theme_button()
+
+        # Use the time the user spends waiting for Chivalry to launch to
+        # parse the discord log into the in-memory cache off the UI thread.
+        # By the time the dashboard opens, cache hits are essentially free.
+        _warm_log_cache_async()
 
     def closeEvent(self, event):
         """Handle window close button"""
@@ -739,45 +745,20 @@ class ActionForm(QDialog):
         self.accept()
 
 def _load_all_sanctions() -> list:
-    """Return every record from discordlogshistory, oldest-first."""
-    records = []
-    if not os.path.exists(DISCORD_LOG_FILE):
-        return records
-    try:
-        with open(DISCORD_LOG_FILE, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    records.append(json.loads(line))
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    return records
+    """Return every record from discordlogshistory, oldest-first.
+
+    Backed by the in-memory cache; the returned list is the cache's own
+    storage, so callers must treat it as read-only.
+    """
+    return _read_log_cached()[1]
 
 
 def _load_sanctions_for_player(player_id: str) -> list:
     """Return all discordlogshistory records whose PlayFabID matches player_id."""
-    records = []
-    if not os.path.exists(DISCORD_LOG_FILE):
-        return records
-    try:
-        with open(DISCORD_LOG_FILE, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                    if record.get('PlayFabID', '').upper() == player_id.upper():
-                        records.append(record)
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    return records
+    if not player_id:
+        return []
+    _, _, _, by_pid = _read_log_cached()
+    return list(by_pid.get(player_id.upper(), ()))
 
 
 def _compute_all_player_statuses() -> dict:
@@ -851,6 +832,45 @@ class _ThemeBus(QObject):
 _theme_bus = _ThemeBus()
 
 
+def _format_sanction_timestamp(ts_raw: str) -> tuple:
+    """Format an ISO-8601 UTC timestamp for display in a sanction card.
+
+    Returns (display, tooltip):
+      - display: 'YYYY-MM-DD  HH:MM TZ' in the viewer's local timezone,
+        where TZ is the OS-reported abbreviation (Windows often returns
+        long names like 'Eastern Standard Time' — those are condensed to
+        their initials, e.g. 'EST'). Falls back to a 'UTC±HH:MM' offset
+        when no name is available.
+      - tooltip: the original UTC timestamp, so reviewers can cross-
+        reference against logs that record times in UTC.
+
+    On parse failure both values fall back to the raw input.
+    """
+    if not ts_raw:
+        return '', ''
+    try:
+        dt_utc = datetime.datetime.fromisoformat(ts_raw.replace('Z', '+00:00'))
+        dt_local = dt_utc.astimezone()
+        tz_name = dt_local.strftime('%Z') or ''
+        if tz_name and ' ' in tz_name:
+            initials = ''.join(w[0] for w in tz_name.split() if w[:1].isupper())
+            tz_label = initials or tz_name
+        else:
+            tz_label = tz_name
+        if not tz_label:
+            offset = dt_local.utcoffset() or datetime.timedelta(0)
+            total_min = int(offset.total_seconds() // 60)
+            sign = '+' if total_min >= 0 else '-'
+            hh, mm = divmod(abs(total_min), 60)
+            tz_label = f'UTC{sign}{hh:02d}:{mm:02d}'
+        display = f"{dt_local.strftime('%Y-%m-%d')}  {dt_local.strftime('%H:%M')} {tz_label}"
+        tooltip = f"{dt_utc.strftime('%Y-%m-%d %H:%M')} UTC"
+        return display, tooltip
+    except Exception:
+        fallback = ts_raw[:10] + '  ' + ts_raw[11:16] + ' UTC' if len(ts_raw) >= 16 else ts_raw
+        return fallback, ts_raw
+
+
 def _build_sanction_card(record: dict, is_dark: bool = None,
                          embed_playfabid: bool = False) -> QFrame:
     """Card representing one sanction record.
@@ -891,10 +911,7 @@ def _build_sanction_card(record: dict, is_dark: bool = None,
         action_label, accent = (action.upper() or '?'), UI_COLOR_MUTED
 
     ts_raw = record.get('timestamp', '')
-    try:
-        ts = ts_raw[:10] + '  ' + ts_raw[11:16] + ' UTC'
-    except Exception:
-        ts = ts_raw
+    ts, ts_tooltip = _format_sanction_timestamp(ts_raw)
 
     frame = QFrame()
     frame.setObjectName("SanctionCard")
@@ -924,6 +941,8 @@ def _build_sanction_card(record: dict, is_dark: bool = None,
     header.addStretch()
     lbl_ts = QLabel(ts)
     lbl_ts.setFont(QFont('Segoe UI', 8))
+    if ts_tooltip:
+        lbl_ts.setToolTip(ts_tooltip)
     header.addWidget(lbl_ts)
     layout.addLayout(header)
 
@@ -1458,7 +1477,23 @@ class ConsoleKeyDialog(QDialog):
         self.ok_button.setEnabled(True)
 
 class SanctionSearchDialog(QDialog):
-    """Full-history search dialog: filter by Username, PlayFabID, or both."""
+    """Full-history search dialog: filter by Username, PlayFabID, or both.
+
+    Two performance affordances tuned for large histories:
+      * Search input is debounced (~200 ms) so each keystroke does not
+        rebuild the card list mid-typing.
+      * Renders at most `_RENDER_CAP_DEFAULT` cards initially; if more
+        results match, a "Show all" footer button lifts the cap. Card
+        construction is by far the slowest part of a refresh, so this
+        bounds worst-case latency regardless of total history size.
+    """
+
+    # Initial render is bounded because each card is a QFrame with a
+    # stylesheet, and Qt's stylesheet pass on first paint dominates open
+    # latency. 50 keeps the scroll feeling populated without freezing
+    # the dialog on first show; "Show all" lifts the cap on demand.
+    _RENDER_CAP_DEFAULT = 50
+    _SEARCH_DEBOUNCE_MS = 200
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1468,15 +1503,12 @@ class SanctionSearchDialog(QDialog):
 
         # Load the full history once
         self._all_records = list(reversed(_load_all_sanctions()))  # most-recent first
+        self._render_cap  = self._RENDER_CAP_DEFAULT
 
         root = QVBoxLayout()
         root.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
         root.setSpacing(UI_SPACING_INNER)
         self.setLayout(root)
-
-        title = QLabel("Sanction History")
-        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
-        root.addWidget(title)
 
         # ── Search bar + inline count label ───────────────────────────
         bar_row = QHBoxLayout()
@@ -1484,18 +1516,21 @@ class SanctionSearchDialog(QDialog):
 
         self._search_input = QLineEdit()
         self._search_input.setPlaceholderText("Search by Username or PlayFabID…")
-        self._search_input.setMinimumHeight(34)
         self._search_input.setClearButtonEnabled(True)
-        self._search_input.textChanged.connect(self._refresh)
+        self._search_input.textChanged.connect(lambda _: self._on_text_changed())
         bar_row.addWidget(self._search_input, 1)
 
         self._result_label = QLabel()
-        self._result_label.setStyleSheet("color: gray; font-style: italic;")
+        self._result_label.setStyleSheet("color: gray; font-style: italic; font-size: 12pt; padding: 0px 10px 0px 0px;")
         self._result_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._result_label.setMinimumWidth(110)
+        self._result_label.setMinimumWidth(80)
         bar_row.addWidget(self._result_label, 0)
 
         root.addLayout(bar_row)
+
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.timeout.connect(self._refresh)
 
         # ── Scroll area ───────────────────────────────────────────────
         self._scroll = QScrollArea()
@@ -1507,6 +1542,16 @@ class SanctionSearchDialog(QDialog):
         self._refresh()
 
     # ── Internal helpers ──────────────────────────────────────────────
+
+    def _on_text_changed(self):
+        # Each new query is a fresh view: reset the render cap so we
+        # don't carry "Show all" state from a previous filter.
+        self._render_cap = self._RENDER_CAP_DEFAULT
+        self._search_timer.start(self._SEARCH_DEBOUNCE_MS)
+
+    def _show_all(self, total: int):
+        self._render_cap = total
+        self._refresh()
 
     def _refresh(self):
         term = self._search_input.text().strip().lower()
@@ -1540,9 +1585,16 @@ class SanctionSearchDialog(QDialog):
         layout.setContentsMargins(4, 4, 4, 4)
 
         if matches:
-            is_dark = load_theme_preference()
-            for record in matches:
+            visible  = matches[:self._render_cap]
+            overflow = count - len(visible)
+            is_dark  = load_theme_preference()
+            for record in visible:
                 layout.addWidget(_build_sanction_card(record, is_dark, embed_playfabid=True))
+            if overflow > 0:
+                more_btn = QPushButton(f"Show all {count} records ({overflow} more)… (Expect a few seconds freeze.)")
+                more_btn.setMinimumHeight(34)
+                more_btn.clicked.connect(lambda _=False, n=count: self._show_all(n))
+                layout.addWidget(more_btn)
         else:
             empty = QLabel("No matching records found.")
             empty.setAlignment(Qt.AlignCenter)
@@ -2313,7 +2365,44 @@ class AdminDashboard(QWidget):
         When `silent=True` the call is treated as a background refresh:
         missing configuration and errors are swallowed (logged to stdout
         only) and no progress dialog is shown. Used by the auto-scrape
-        that runs right after an action's webhook is sent.
+        that runs right after an action's webhook is sent — and from
+        startup, where the Discord round-trips would otherwise freeze
+        the dashboard for the duration of pagination + sleeps.
+
+        The silent path runs on a daemon thread; the manual path
+        (`silent=False`) stays on the main thread because it owns a
+        modal QProgressBar dialog and surfaces errors via QMessageBox.
+        A non-blocking lock dedupes back-to-back silent triggers (e.g.
+        a startup scrape colliding with the post-action follow-up).
+        """
+        if silent:
+            if not _silent_scrape_lock.acquire(blocking=False):
+                # Another silent scrape is already in flight — let it
+                # finish; the next event will retrigger naturally.
+                return
+
+            def _run():
+                try:
+                    self._fetch_discord_channel_messages_impl(silent=True)
+                finally:
+                    _silent_scrape_lock.release()
+
+            threading.Thread(
+                target=_run,
+                name="discord-silent-scrape",
+                daemon=True,
+            ).start()
+            return
+
+        self._fetch_discord_channel_messages_impl(silent=False)
+
+    def _fetch_discord_channel_messages_impl(self, silent: bool):
+        """Body of the scrape. Runs on the calling thread.
+
+        For `silent=True` callers, the calling thread is a daemon
+        worker (see `fetch_discord_channel_messages`). Anything that
+        touches Qt widgets in this body is gated on `silent=False`,
+        so the silent path stays Qt-free and thread-safe.
         """
         import urllib.request
         import urllib.error
@@ -2381,6 +2470,31 @@ class AdminDashboard(QWidget):
             else:
                 QMessageBox.critical(self, title, body)
 
+        # --- Read the existing log via the in-memory cache -----------------
+        # Hoisted above the pagination loop so we can compare each
+        # incoming Discord message against its cached twin and break
+        # early once we've crossed into already-stored history. The
+        # dicts returned here are the cache's own references — legacy
+        # name enrichment below mutates them in place. The file rewrite
+        # at the end then drops a fresh mtime, and we explicitly
+        # invalidate the cache so the next read picks up the canonical
+        # disk state.
+        all_records_view, _, by_id_view, _ = _read_log_cached()
+        existing_records = list(all_records_view)
+        existing_ids_set = set(by_id_view.keys())
+        ids_missing_name = set()
+        for rec in existing_records:
+            if not isinstance(rec, dict):
+                continue
+            raw_mid = rec.get('ModeratorID', '')
+            if raw_mid and not rec.get('ModeratorName', ''):
+                # Pull the numeric id out even if the stored value is still
+                # a raw mention like "<@!123>" or was stored as "!123" by
+                # a previous buggy extractor.
+                mid = _extract_mention_id(raw_mid)
+                if mid:
+                    ids_missing_name.add(mid)
+
         all_messages = []
         before = None
         headers = {
@@ -2392,6 +2506,18 @@ class AdminDashboard(QWidget):
         # Hard cap on retry_after values returned by Discord so a pathological
         # response can't lock the UI for a long time.
         MAX_RETRY_AFTER = 60.0
+
+        # Early-stop: once we've seen this many consecutive incoming
+        # webhook messages whose core fields equal the cached record at
+        # the same id, everything older must already be on disk and
+        # there's no point paginating further. Saves bandwidth and rate-
+        # limit budget on every routine refresh after the first full
+        # backfill. Non-webhook messages are ignored for this counter
+        # (mixed channels of human chat + webhooks would otherwise never
+        # accumulate "consecutive" matches).
+        EARLY_STOP_THRESHOLD = 10
+        consecutive_matches = 0
+        early_stop          = False
 
         try:
             while True:
@@ -2456,8 +2582,38 @@ class AdminDashboard(QWidget):
                 if not data:
                     break
 
-                webhook_messages = [m for m in data if isinstance(m, dict) and m.get('webhook_id')]
-                all_messages.extend(webhook_messages)
+                # Walk the page in API order (newest-first within the
+                # page). Webhook messages get appended to `all_messages`
+                # as before, but we also tally consecutive cached
+                # matches so we can stop the moment we've crossed into
+                # history we already have on disk.
+                for m in data:
+                    if not isinstance(m, dict):
+                        continue
+                    if not m.get('webhook_id'):
+                        continue
+                    all_messages.append(m)
+
+                    mid = m.get('id')
+                    cached = by_id_view.get(mid) if mid else None
+                    if cached is not None and _scrape_record_matches(m, cached):
+                        consecutive_matches += 1
+                        if consecutive_matches >= EARLY_STOP_THRESHOLD:
+                            early_stop = True
+                            break
+                    else:
+                        consecutive_matches = 0
+
+                if early_stop:
+                    if silent:
+                        print(f"[SCRAPE] Early stop: {EARLY_STOP_THRESHOLD} "
+                              f"consecutive cached matches; older history already on disk")
+                    else:
+                        _pd_set_text(
+                            f"Reached cached history ({EARLY_STOP_THRESHOLD} "
+                            f"consecutive matches) — stopping."
+                        )
+                    break
 
                 # Find the last usable id for pagination; skip entries that
                 # lack one instead of crashing with KeyError.
@@ -2490,42 +2646,6 @@ class AdminDashboard(QWidget):
         # Fall back to empty string so a message missing an id can't crash
         # the sort — it will simply float to the top.
         all_messages.sort(key=lambda m: str(m.get('id', '')) if isinstance(m, dict) else '')
-
-        # --- Read the existing log once ------------------------------------
-        # We need three things from it: the set of already-stored message IDs
-        # (to filter out duplicates), the records themselves (so we can
-        # back-fill missing moderator names in place), and the set of IDs
-        # currently lacking a resolved name so we know what still needs a
-        # Discord API lookup.
-        existing_records = []
-        existing_ids_set = set()
-        ids_missing_name = set()
-        if os.path.exists(DISCORD_LOG_FILE):
-            try:
-                with open(DISCORD_LOG_FILE, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            rec = json.loads(line)
-                        except Exception:
-                            # Preserve malformed lines untouched for safety
-                            existing_records.append(line)
-                            continue
-                        existing_records.append(rec)
-                        if rec.get('id'):
-                            existing_ids_set.add(rec['id'])
-                        raw_mid = rec.get('ModeratorID', '')
-                        if raw_mid and not rec.get('ModeratorName', ''):
-                            # Pull the numeric id out even if the stored value
-                            # is still a raw mention like "<@!123>" or was
-                            # stored as "!123" by a previous buggy extractor.
-                            mid = _extract_mention_id(raw_mid)
-                            if mid:
-                                ids_missing_name.add(mid)
-            except Exception:
-                pass
 
         new_messages = [
             m for m in all_messages
@@ -2630,6 +2750,7 @@ class AdminDashboard(QWidget):
                 with open(DISCORD_LOG_FILE, 'a', encoding='utf-8') as f:
                     for msg in new_messages:
                         f.write(_serialize_discord_message(msg, name_by_id) + '\n')
+                _invalidate_log_cache()
             except Exception as e:
                 _pd_close()
                 _err("Save Error", f"Could not write discordlogshistory:\n{str(e)}")
@@ -2651,6 +2772,7 @@ class AdminDashboard(QWidget):
                     for msg in new_messages:
                         f.write(_serialize_discord_message(msg, name_by_id) + '\n')
                 os.replace(tmp_path, DISCORD_LOG_FILE)
+                _invalidate_log_cache()
             except Exception as e:
                 try:
                     os.remove(tmp_path)
@@ -3035,6 +3157,142 @@ class FirstToScoreboardWindow(QDialog):
 
 DISCORD_LOG_FILE = "discordlogshistory"
 
+# Module-level cache of parsed discordlogshistory.
+# Invalidated by (mtime, size); every helper that reads sanctions goes
+# through `_read_log_cached()` so the file is parsed at most once per
+# external mutation. Index views (`by_id`, `by_pid`) hold the same dict
+# references as `dicts`, not copies.
+#
+# Thread safety: the parse can run on a background warmup thread (see
+# `_warm_log_cache_async`) while UI-thread callers also hit the cache.
+# `_log_cache_lock` serializes parses; readers either get a cache hit
+# (lock-free fast path after the first load completes) or briefly block
+# on an in-progress parse instead of duplicating it on the UI thread.
+_log_cache_lock     = threading.Lock()
+# Held by an in-flight silent scrape; non-blocking acquire lets repeat
+# triggers (startup + per-action follow-ups) coalesce into a single run.
+_silent_scrape_lock = threading.Lock()
+_log_cache_key      = None   # (mtime, size) tuple, or None when unloaded
+_log_cache_records  = []     # list[dict | str]  — str preserves malformed lines verbatim
+_log_cache_dicts    = []     # list[dict]        — subset of _records (no malformed lines)
+_log_cache_by_id    = {}     # dict[id] -> record
+_log_cache_by_pid   = {}     # dict[playfab_upper] -> list[record]
+_log_warm_thread    = None   # daemon Thread currently warming the cache, or None
+
+
+def _read_log_cached():
+    """Return (records, dicts, by_id, by_pid) for discordlogshistory.
+
+    Re-parses from disk only when (mtime, size) has changed since the
+    previous load. Returned containers are the cache itself — callers
+    must treat them as read-only.
+
+    Thread-safe: a background warmup thread and the UI thread can both
+    call this; the lock ensures the file is parsed at most once.
+    """
+    global _log_cache_key, _log_cache_records, _log_cache_dicts
+    global _log_cache_by_id, _log_cache_by_pid
+
+    with _log_cache_lock:
+        if not os.path.exists(DISCORD_LOG_FILE):
+            if _log_cache_key is not None:
+                _log_cache_key     = None
+                _log_cache_records = []
+                _log_cache_dicts   = []
+                _log_cache_by_id   = {}
+                _log_cache_by_pid  = {}
+            return _log_cache_records, _log_cache_dicts, _log_cache_by_id, _log_cache_by_pid
+
+        try:
+            st = os.stat(DISCORD_LOG_FILE)
+        except OSError:
+            return _log_cache_records, _log_cache_dicts, _log_cache_by_id, _log_cache_by_pid
+
+        key = (st.st_mtime, st.st_size)
+        if key == _log_cache_key:
+            return _log_cache_records, _log_cache_dicts, _log_cache_by_id, _log_cache_by_pid
+
+        records = []
+        dicts   = []
+        by_id   = {}
+        by_pid  = {}
+        try:
+            with open(DISCORD_LOG_FILE, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        records.append(line)
+                        continue
+                    if not isinstance(rec, dict):
+                        records.append(line)
+                        continue
+                    # Intern keys so all records share one copy of each key
+                    # string instead of allocating fresh ones per line.
+                    rec = {sys.intern(k) if isinstance(k, str) else k: v for k, v in rec.items()}
+                    records.append(rec)
+                    dicts.append(rec)
+                    rid = rec.get('id')
+                    if rid:
+                        by_id[rid] = rec
+                    pid = rec.get('PlayFabID', '')
+                    if pid:
+                        by_pid.setdefault(pid.upper(), []).append(rec)
+        except Exception:
+            # Leave the previous cache in place on transient read failure.
+            return _log_cache_records, _log_cache_dicts, _log_cache_by_id, _log_cache_by_pid
+
+        _log_cache_key     = key
+        _log_cache_records = records
+        _log_cache_dicts   = dicts
+        _log_cache_by_id   = by_id
+        _log_cache_by_pid  = by_pid
+        return records, dicts, by_id, by_pid
+
+
+def _invalidate_log_cache() -> None:
+    """Force the next _read_log_cached() call to re-parse from disk.
+
+    Called after the scrape appends or rewrites the log file — the
+    write itself updates mtime, but invalidating explicitly avoids
+    relying on filesystem timestamp resolution.
+    """
+    global _log_cache_key
+    with _log_cache_lock:
+        _log_cache_key = None
+
+
+def _warm_log_cache_async() -> None:
+    """Warm the discord log cache on a daemon thread, off the UI thread.
+
+    Idempotent: if a warmup is already in flight, returns immediately.
+    The thread parses into the same cache UI-thread callers consult, so
+    by the time the user opens the dashboard the first cache hit is
+    near-free even with a multi-thousand-record history.
+
+    Safe to call before/during/after the waiting dialog. Daemon flag
+    means it cannot block app shutdown.
+    """
+    global _log_warm_thread
+    t = _log_warm_thread
+    if t is not None and t.is_alive():
+        return
+
+    def _run():
+        try:
+            _read_log_cached()
+        except Exception as e:
+            # Never let a warmup crash propagate — the UI fallbacks
+            # (synchronous read on first access) still work.
+            print(f"[CACHE] Warmup failed: {e}")
+
+    t = threading.Thread(target=_run, name="discord-log-cache-warmup", daemon=True)
+    _log_warm_thread = t
+    t.start()
+
 
 def _schedule_silent_discord_scrape(origin_widget, delay_ms: int = 2000) -> None:
     """Fire a silent log scrape shortly after a webhook-triggered action.
@@ -3068,28 +3326,6 @@ def _schedule_silent_discord_scrape(origin_widget, delay_ms: int = 2000) -> None
     )
 
 
-def _load_discord_log_ids() -> set:
-    """Read discordlogshistory and return the set of all stored message IDs."""
-    ids = set()
-    if not os.path.exists(DISCORD_LOG_FILE):
-        return ids
-    try:
-        with open(DISCORD_LOG_FILE, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        record = json.loads(line)
-                        msg_id = record.get('id')
-                        if msg_id:
-                            ids.add(msg_id)
-                    except Exception:
-                        pass
-    except Exception:
-        pass
-    return ids
-
-
 _MENTION_ID_RE = re.compile(r'<@[!&]?(\d+)>')
 _DIGITS_RE = re.compile(r'\d+')
 _BOLD_RE = re.compile(r'(?:\*\*|__)([^*_]+?)(?:\*\*|__)')
@@ -3116,27 +3352,41 @@ def _extract_mention_id(raw) -> str:
     return m.group(0) if m else ''
 
 
-def _serialize_discord_message(msg: dict, name_by_id: dict = None) -> str:
-    """Serialize a single Discord webhook message to a flat JSON line.
+# Core fields used to decide whether a freshly-fetched Discord message
+# is the "same record" as the one we already have on disk. Excludes
+# `ModeratorName`: that field is filled in by a separate /users/{id}
+# round-trip, so a cached record may have it while a freshly-extracted
+# one (no `name_by_id`) won't — comparing it would cause spurious
+# mismatches and defeat the early-stop optimisation.
+_SCRAPE_DUP_FIELDS = (
+    'id', 'timestamp', 'action', 'PlayFabID', 'Username',
+    'Reason', 'Duration', 'ModeratorID',
+)
 
-    Stored fields: id, timestamp, action, PlayFabID, Username, Reason,
-                   Duration, ModeratorID, ModeratorName
 
-    Action is extracted from the bold word(s) in the embed description:
-      "A **ban** has been executed"     -> ban
-      "An **unban** has been executed"  -> unban
-      "A **kick** has been executed"    -> kick
-      "A **warning** has been issued"   -> warn
-      "A **First To** match ..."        -> ft
+def _scrape_record_matches(msg: dict, cached: dict) -> bool:
+    """Whether a freshly-fetched Discord message would produce the same
+    sanction record as one already on disk (cached).
 
-    If `name_by_id` is provided and contains the extracted moderator ID,
-    the corresponding display name is baked into the record as
-    `ModeratorName` so the read path never needs a separate cache.
+    Used by the scrape pagination loop to detect the boundary between
+    new history and already-stored history without serializing through
+    JSON.
+    """
+    if not isinstance(cached, dict):
+        return False
+    fresh = _discord_message_to_record(msg)
+    for k in _SCRAPE_DUP_FIELDS:
+        if fresh.get(k, '') != cached.get(k, ''):
+            return False
+    return True
 
-    Intentionally tolerant of minor format drift: field names are matched
-    case-insensitively, bold markers may be ** or __, and key/value lines
-    may have surrounding markdown. Any unexpected structure falls through
-    and produces a record with empty fields rather than raising.
+
+def _discord_message_to_record(msg: dict, name_by_id: dict = None) -> dict:
+    """Extract the flat sanction record from a Discord webhook message.
+
+    See `_serialize_discord_message` for the field reference and parsing
+    rules. Split out so callers that need to *compare* messages (the
+    scrape's early-stop check) can avoid a JSON round-trip.
     """
     _ACTION_MAP = [
         ('unban',    'unban'),     # check before 'ban' so 'unban' doesn't match 'ban'
@@ -3161,7 +3411,7 @@ def _serialize_discord_message(msg: dict, name_by_id: dict = None) -> str:
 
     try:
         if not isinstance(msg, dict):
-            return json.dumps(record, ensure_ascii=False)
+            return record
 
         record['id']        = str(msg.get('id', '') or '')
         record['timestamp'] = str(msg.get('timestamp', '') or '')
@@ -3248,7 +3498,32 @@ def _serialize_discord_message(msg: dict, name_by_id: dict = None) -> str:
         # Never let a single weird message break the whole scrape.
         pass
 
-    return json.dumps(record, ensure_ascii=False)
+    return record
+
+
+def _serialize_discord_message(msg: dict, name_by_id: dict = None) -> str:
+    """Serialize a single Discord webhook message to a flat JSON line.
+
+    Stored fields: id, timestamp, action, PlayFabID, Username, Reason,
+                   Duration, ModeratorID, ModeratorName
+
+    Action is extracted from the bold word(s) in the embed description:
+      "A **ban** has been executed"     -> ban
+      "An **unban** has been executed"  -> unban
+      "A **kick** has been executed"    -> kick
+      "A **warning** has been issued"   -> warn
+      "A **First To** match ..."        -> ft
+
+    If `name_by_id` is provided and contains the extracted moderator ID,
+    the corresponding display name is baked into the record as
+    `ModeratorName` so the read path never needs a separate cache.
+
+    Intentionally tolerant of minor format drift: field names are matched
+    case-insensitively, bold markers may be ** or __, and key/value lines
+    may have surrounding markdown. Any unexpected structure falls through
+    and produces a record with empty fields rather than raising.
+    """
+    return json.dumps(_discord_message_to_record(msg, name_by_id), ensure_ascii=False)
 
 
 # ---- Persistent last-used parameters (ban/kick/admin/server/add time) ----
@@ -3848,6 +4123,12 @@ def main():
     else:
         apply_light_theme(app)
 
+    # Start parsing the discord log into the cache on a daemon thread now,
+    # so it overlaps with theme setup, the waiting dialog, webhook init,
+    # and dashboard construction. Idempotent — calling it again from
+    # ChivalryWaitingDialog.__init__ is a no-op when this one is in flight.
+    _warm_log_cache_async()
+
     if "--no-wait" not in sys.argv and not check_chivalry_window():
         waiting_dialog = ChivalryWaitingDialog()
         result = waiting_dialog.exec_()
@@ -3863,10 +4144,10 @@ def main():
     else:
         print("[STARTUP] Discord webhooks not configured or failed to initialize")
 
-    # Check discord logs history file at startup
+    # File presence check only — entry count comes from the cache once the
+    # background warmup thread finishes, so startup never blocks on parse.
     if os.path.exists(DISCORD_LOG_FILE):
-        known_ids = _load_discord_log_ids()
-        print(f"[STARTUP] Discord logs history file found — {len(known_ids)} entries")
+        print("[STARTUP] Discord logs history file found — parsing in background")
     else:
         print("[STARTUP] Discord logs history file not found — will be created on first scrape")
 
