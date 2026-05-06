@@ -17,7 +17,7 @@ from typing import Callable, Optional
 # Updater mode: invoked as a *separate* executable copy so it can replace the original exe.
 
 GITHUB_REPO = "Lionkjgame1219/Chiv2AdminDashboard"
-GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=100"
+GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=10"
 APPDATA_DIRNAME = "Chiv2AdminDashboard"
 
 

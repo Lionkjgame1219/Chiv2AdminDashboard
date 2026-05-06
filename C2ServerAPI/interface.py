@@ -772,9 +772,11 @@ def _compute_all_player_statuses() -> dict:
     most recent unban for that same PlayFabID.
     """
     now           = datetime.datetime.now(datetime.timezone.utc)
+    one_week_ago  = now - datetime.timedelta(days=7)
     one_month_ago = now - datetime.timedelta(days=30)
     latest_active_ban = {}   # pid -> latest ts of a still-active ban
     latest_unban      = {}   # pid -> latest unban ts
+    kicked            = set()
     cautioned         = set()
 
     for record in _load_all_sanctions():
@@ -808,7 +810,9 @@ def _compute_all_player_statuses() -> dict:
             prev = latest_unban.get(pid)
             if prev is None or ts > prev:
                 latest_unban[pid] = ts
-        elif action in ('kick', 'warn') and ts >= one_month_ago:
+        elif action in ('kick') and ts >= one_week_ago:
+            kicked.add(pid)
+        elif action in ('warn') and ts >= one_month_ago:
             cautioned.add(pid)
 
     banned = {
@@ -1254,10 +1258,13 @@ class PlayersWindow(QDialog):
             item = QListWidgetItem(f"{name} - {pid}")
             status = statuses.get(pid.upper())
             if status == 'banned':
-                item.setBackground(QBrush(QColor('#c0392b')))
+                item.setBackground(QBrush(QColor(UI_COLOR_BAN)))
+                item.setForeground(white)
+            elif status == 'kicked':
+                item.setBackground(QBrush(QColor(UI_COLOR_KICK)))
                 item.setForeground(white)
             elif status == 'cautioned':
-                item.setBackground(QBrush(QColor('#d35400')))
+                item.setBackground(QBrush(QColor(UI_COLOR_WARN)))
                 item.setForeground(white)
             self.player_list.addItem(item)
 
@@ -2325,7 +2332,6 @@ class AdminDashboard(QWidget):
         token, ok = self.prompt_wide_text(
             "Discord Bot Token",
             "Enter your Discord Bot Token:\n"
-            "(Discord Developer Portal > Your Application > Bot > Token)\n"
             "(Leave empty to clear)",
             current_token
         )
@@ -2344,9 +2350,8 @@ class AdminDashboard(QWidget):
         channel_id, ok = QInputDialog.getText(
             self,
             "Discord Channel ID",
-            "Enter the Discord Channel ID to scrape:\n"
-            "(Right-click the channel in Discord > Copy Channel ID)\n"
-            "(Developer Mode must be enabled in Discord settings)",
+            "Enter the Discord Channel ID to scrape:\n",
+            "(Leave empty to clear)",
             text=current_channel
         )
         if not ok:
