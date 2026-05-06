@@ -2350,8 +2350,7 @@ class AdminDashboard(QWidget):
         channel_id, ok = QInputDialog.getText(
             self,
             "Discord Channel ID",
-            "Enter the Discord Channel ID to scrape:\n",
-            "(Leave empty to clear)",
+            "Enter the Discord Channel ID to scrape:\n(Leave empty to clear)",
             text=current_channel
         )
         if not ok:
