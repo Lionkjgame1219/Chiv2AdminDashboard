@@ -4147,7 +4147,6 @@ def _show_release_notes_dialog(parent):
         dlg_layout.addWidget(header)
 
         if body is None:
-            dlg.resize(520, 200)
             msg = QLabel(
                 "A new version has been installed.<br><br>"
                 "Release notes couldn't be fetched right now (you may be offline "
@@ -4158,10 +4157,9 @@ def _show_release_notes_dialog(parent):
             msg.setWordWrap(True)
             msg.setOpenExternalLinks(True)
             msg.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            msg.setMinimumWidth(460)
             dlg_layout.addWidget(msg)
-            dlg_layout.addStretch(1)
         else:
-            dlg.resize(640, 500)
             browser = QTextBrowser()
             browser.setOpenExternalLinks(True)
             text = body if body else "_No release notes provided for this release._"
@@ -4170,12 +4168,30 @@ def _show_release_notes_dialog(parent):
                 browser.setMarkdown(text)
             except (AttributeError, TypeError):
                 browser.setPlainText(text)
+
+            # Size the browser to its rendered content. Set the document's
+            # text width first so .size() reflects the wrapped layout at the
+            # width we'll actually display, then bound by the screen so a
+            # very long release body still produces a dialog that fits.
+            content_width = 640
+            doc = browser.document()
+            doc.setDocumentMargin(8)
+            doc.setTextWidth(content_width)
+            doc_height = int(doc.size().height())
+
+            screen = QApplication.primaryScreen()
+            max_h = (screen.availableGeometry().height() - 240) if screen else 700
+            height = max(160, min(doc_height + 24, max_h))
+
+            browser.setMinimumWidth(content_width + 24)
+            browser.setMinimumHeight(height)
             dlg_layout.addWidget(browser)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok)
         btns.accepted.connect(dlg.accept)
         dlg_layout.addWidget(btns)
 
+        dlg.adjustSize()
         dlg.exec_()
         # Persist after the user has actually seen the dialog, so a crash
         # on the dashboard right after the update doesn't suppress the
