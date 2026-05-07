@@ -427,7 +427,10 @@ class ActionForm(QDialog):
 
     def __init__(self, action_name, player_id, player_name, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"{action_name} Player")
+        if action_name.lower() == "note":
+            self.setWindowTitle(f"Add a note to Player")
+        else:
+            self.setWindowTitle(f"{action_name} Player")
         self.resize(480, 420)
         self.setModal(True)
         self.setWindowModality(Qt.WindowModal)
@@ -554,16 +557,6 @@ class ActionForm(QDialog):
 
         preset_group.setLayout(preset_layout)
         main_layout.addWidget(preset_group)
-
-        # Warnings are Discord-only, so the in-game toggle is irrelevant
-        # for them — hide the checkbox entirely in that case.
-        if action_name.lower() != "warn":
-            self.notify_in_game = QCheckBox("Notify in-game")
-            self.notify_in_game.setChecked(ActionForm._notify_in_game_last)
-            self.notify_in_game.toggled.connect(ActionForm._remember_notify_in_game)
-            main_layout.addWidget(self.notify_in_game)
-        else:
-            self.notify_in_game = None
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.perform_action)
@@ -717,10 +710,10 @@ class ActionForm(QDialog):
                 wehbooks.MessageForAdmin(player_id, player_name, reason, time_hour, "ban")
                 _schedule_silent_discord_scrape(self)
 
-        elif self.action_name.lower() == "warn":
-            print(f"[WARN] Player ID={player_id}, Reason={reason}")
-            # Warning is Discord-only — no in-game command needed
-            wehbooks.MessageForAdmin(player_id, player_name, reason, None, "warn")
+        elif self.action_name.lower() == "note":
+            print(f"[NOTE] Player ID={player_id}, Reason={reason}")
+            # Note is Discord-only — no in-game command needed
+            wehbooks.MessageForAdmin(player_id, player_name, reason, None, "note")
             set_persisted_value('last_kick_reason', reason)
             _schedule_silent_discord_scrape(self)
 
@@ -812,7 +805,7 @@ def _compute_all_player_statuses() -> dict:
                 latest_unban[pid] = ts
         elif action in ('kick') and ts >= one_week_ago:
             kicked.add(pid)
-        elif action in ('warn') and ts >= one_month_ago:
+        elif action in ('warn', 'note') and ts >= one_month_ago:
             cautioned.add(pid)
 
     banned = {
@@ -907,8 +900,8 @@ def _build_sanction_card(record: dict, is_dark: bool = None,
         action_label, accent = 'BAN',     UI_COLOR_BAN
     elif action == 'kick' or (not action and reason and username):
         action_label, accent = 'KICK',    UI_COLOR_KICK
-    elif action == 'warn':
-        action_label, accent = 'WARNING', UI_COLOR_WARN
+    elif action in ('warn', 'note'):
+        action_label, accent = 'NOTE', UI_COLOR_WARN
     elif action == 'unban' or (not action and not reason):
         action_label, accent = 'UNBAN',   UI_COLOR_UNBAN
     else:
@@ -1062,7 +1055,7 @@ class PlayerActionDialog(QDialog):
         # equally so the column never leaves a dead zone at the bottom.
         left.addWidget(_action_btn("Ban",                    UI_COLOR_BAN,   self.ban_player),          1)
         left.addWidget(_action_btn("Kick",                   UI_COLOR_KICK,  self.kick_player),         1)
-        left.addWidget(_action_btn("Warn",                   UI_COLOR_WARN,  self.warn_player),         1)
+        left.addWidget(_action_btn("Add a note",                   UI_COLOR_WARN,  self.note_player),         1)
         left.addWidget(_action_btn("Chivalry2Stats Profile", UI_COLOR_INFO,  self.open_player_profile), 1)
         left.addWidget(_action_btn("Copy PlayFabID",         UI_COLOR_UNBAN, self.copy_player_id),      1)
 
@@ -1070,34 +1063,55 @@ class PlayerActionDialog(QDialog):
         root.addWidget(actions_group)
 
         # ── Right: sanction history ──────────────────────────────────
-        sanctions = _load_sanctions_for_player(player_id)
+        # Stored on self so a post-scrape signal can clear and rebuild
+        # this column without recreating the dialog.
+        self._right_col = QVBoxLayout()
+        self._right_col.setSpacing(UI_SPACING_INNER)
+        self._rebuild_sanction_history()
+        root.addLayout(self._right_col, 1)
+
+        _get_sanctions_bus().sanctionsUpdated.connect(self._rebuild_sanction_history)
+
+    def _rebuild_sanction_history(self):
+        """(Re)populate the right-hand column with the current sanction
+        history for this player. Called once from __init__ and again
+        whenever a scrape lands new records.
+        """
+        # Tear down whatever is currently in the column. deleteLater
+        # schedules the QWidgets for cleanup on the next event-loop tick,
+        # which is safe even mid-paint.
+        while self._right_col.count():
+            item = self._right_col.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+
+        sanctions = _load_sanctions_for_player(self.player_id)
         now       = datetime.datetime.now(datetime.timezone.utc)
         month_ago = now - datetime.timedelta(days=30)
 
-        # Most-recent warn, only kept if issued within 30 days
-        pinned_warning = None
+        # Most-recent note, only kept if issued within 30 days
+        pinned_note = None
         for record in reversed(sanctions):
-            if record.get('action') == 'warn':
+            if record.get('action') in ('warn', 'note'):
                 try:
                     ts = datetime.datetime.fromisoformat(
                         record['timestamp'].replace('Z', '+00:00'))
                     if ts >= month_ago:
-                        pinned_warning = record
+                        pinned_note = record
                 except Exception:
                     pass
                 break
 
-        right_col = QVBoxLayout()
-        right_col.setSpacing(UI_SPACING_INNER)
-
         is_dark = load_theme_preference()
 
-        if pinned_warning:
-            pin_group = QGroupBox("Active Warning (within the last 30 days)")
+        if pinned_note:
+            pin_group = QGroupBox("Active Note (within the last 30 days)")
             pin_layout = QVBoxLayout(pin_group)
             pin_layout.setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
-            pin_layout.addWidget(_build_sanction_card(pinned_warning, is_dark))
-            right_col.addWidget(pin_group)
+            pin_layout.addWidget(_build_sanction_card(pinned_note, is_dark))
+            self._right_col.addWidget(pin_group)
 
         count = len(sanctions)
         history_group = QGroupBox(
@@ -1106,7 +1120,7 @@ class PlayerActionDialog(QDialog):
         hist_layout = QVBoxLayout(history_group)
         hist_layout.setContentsMargins(UI_PAD_INNER, UI_PAD_INNER, UI_PAD_INNER, UI_PAD_INNER)
 
-        pinned_id  = pinned_warning.get('id') if pinned_warning else None
+        pinned_id  = pinned_note.get('id') if pinned_note else None
         scrollable = [r for r in reversed(sanctions) if r.get('id') != pinned_id]
 
         scroll = QScrollArea()
@@ -1122,7 +1136,7 @@ class PlayerActionDialog(QDialog):
         if scrollable:
             for record in scrollable:
                 scroll_layout.addWidget(_build_sanction_card(record, is_dark))
-        elif not pinned_warning:
+        elif not pinned_note:
             empty = QLabel("No sanctions found in log history.")
             empty.setAlignment(Qt.AlignCenter)
             empty.setStyleSheet("color: gray; font-style: italic; padding: 28px;")
@@ -1132,8 +1146,7 @@ class PlayerActionDialog(QDialog):
         scroll.setWidget(scroll_content)
         hist_layout.addWidget(scroll)
 
-        right_col.addWidget(history_group, 1)
-        root.addLayout(right_col, 1)
+        self._right_col.addWidget(history_group, 1)
 
     def copy_player_id(self):
         pyperclip.copy(self.player_id)
@@ -1147,8 +1160,8 @@ class PlayerActionDialog(QDialog):
         form = ActionForm("Kick", self.player_id, self.player_name, parent=self)
         form.exec_()
 
-    def warn_player(self):
-        form = ActionForm("Warn", self.player_id, self.player_name, parent=self)
+    def note_player(self):
+        form = ActionForm("Note", self.player_id, self.player_name, parent=self)
         form.exec_()
 
     def open_player_profile(self):
@@ -1217,8 +1230,23 @@ class PlayersWindow(QDialog):
 
         self.player_list.itemClicked.connect(self.open_player_actions)
         self.setLayout(main_layout)
+
+        # Repaint row colours when a fresh discord log scrape lands. The
+        # roster itself comes from an in-game ListPlayers round-trip and
+        # is unrelated to the sanction log, so we only re-render the list
+        # without re-querying the game.
+        _get_sanctions_bus().sanctionsUpdated.connect(self._on_sanctions_updated)
+
         if self.game is not None:
             self.refresh_player_list()
+
+    def _on_sanctions_updated(self):
+        # Guard: the first scrape can complete before the user has ever
+        # had a player list to colour (no game connection, or roster
+        # request still pending). populate_list iterates filtered_players,
+        # which is only set after a successful clipboard parse.
+        if getattr(self, 'filtered_players', None) is not None:
+            self.populate_list()
 
     def refresh_player_list(self):
         self.awaiting_player_list = True
@@ -1539,6 +1567,11 @@ class SanctionSearchDialog(QDialog):
         self._search_timer.setSingleShot(True)
         self._search_timer.timeout.connect(self._refresh)
 
+        # Reload from the cache when a fresh scrape lands. Records are
+        # cached at dialog open, so without this a new sanction issued
+        # while the search dialog is open wouldn't appear in the list.
+        _get_sanctions_bus().sanctionsUpdated.connect(self._on_sanctions_updated)
+
         # ── Scroll area ───────────────────────────────────────────────
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -1555,6 +1588,12 @@ class SanctionSearchDialog(QDialog):
         # don't carry "Show all" state from a previous filter.
         self._render_cap = self._RENDER_CAP_DEFAULT
         self._search_timer.start(self._SEARCH_DEBOUNCE_MS)
+
+    def _on_sanctions_updated(self):
+        # Re-pull from the cache (it was invalidated by the scrape) and
+        # re-render with the current search term still applied.
+        self._all_records = list(reversed(_load_all_sanctions()))
+        self._refresh()
 
     def _show_all(self, total: int):
         self._render_cap = total
@@ -2790,9 +2829,18 @@ class AdminDashboard(QWidget):
                                         f"Could not rewrite discordlogshistory to enrich "
                                         f"legacy moderator names:\n{str(e)}\n\n"
                                         f"New records were still appended successfully.")
+                # New records were still appended above — let dialogs refresh.
+                if new_messages:
+                    _emit_sanctions_updated()
                 return
 
         _pd_close()
+
+        # Notify the UI only when the on-disk log actually changed, so a
+        # no-op scrape (early-stop with nothing new) doesn't churn open
+        # dialogs. Cross-thread safe — see _emit_sanctions_updated.
+        if new_messages or legacy_changed:
+            _emit_sanctions_updated()
 
     def configure_console_key(self):
         """Prompt user to press the key used to open the in-game console and persist its VK code."""
@@ -3176,6 +3224,45 @@ _log_cache_lock     = threading.Lock()
 # Held by an in-flight silent scrape; non-blocking acquire lets repeat
 # triggers (startup + per-action follow-ups) coalesce into a single run.
 _silent_scrape_lock = threading.Lock()
+
+
+class _SanctionsBus(QObject):
+    """Signal hub: dialogs subscribe here to learn that the discord log
+    file has changed (new sanction records appended or legacy records
+    rewritten) so they can re-pull from `_load_*_sanctions` and rebuild.
+    """
+    sanctionsUpdated = pyqtSignal()
+
+
+_sanctions_bus = None
+
+
+def _get_sanctions_bus() -> _SanctionsBus:
+    """Return the global sanctions bus, creating it lazily on first use.
+
+    Must be called from the UI thread the first time so the QObject is
+    affined to it; subscribers (dialogs) all live on the UI thread, and
+    cross-thread emits from the silent-scrape worker queue automatically.
+    """
+    global _sanctions_bus
+    if _sanctions_bus is None:
+        _sanctions_bus = _SanctionsBus()
+    return _sanctions_bus
+
+
+def _emit_sanctions_updated() -> None:
+    """Notify subscribed dialogs that the sanctions log has changed.
+
+    Safe to call from any thread: PyQt converts the AutoConnection into a
+    QueuedConnection when the emit thread differs from the receiver's
+    thread, so each subscriber's slot runs back on the UI thread.
+
+    No-op when nobody has touched the bus yet (no dialogs ever opened) —
+    avoids creating the QObject from a worker thread.
+    """
+    bus = _sanctions_bus
+    if bus is not None:
+        bus.sanctionsUpdated.emit()
 _log_cache_key      = None   # (mtime, size) tuple, or None when unloaded
 _log_cache_records  = []     # list[dict | str]  — str preserves malformed lines verbatim
 _log_cache_dicts    = []     # list[dict]        — subset of _records (no malformed lines)
@@ -3396,8 +3483,9 @@ def _discord_message_to_record(msg: dict, name_by_id: dict = None) -> dict:
         ('unban',    'unban'),     # check before 'ban' so 'unban' doesn't match 'ban'
         ('ban',      'ban'),
         ('kick',     'kick'),
-        ('warning',  'warn'),
-        ('warn',     'warn'),
+        ('note',     'note'),
+        ('warning',  'note'),      # legacy: pre-rename embeds said "warning"
+        ('warn',     'note'),      # legacy: pre-rename embeds said "warn"
         ('first to', 'ft'),
     ]
 
@@ -3515,7 +3603,8 @@ def _serialize_discord_message(msg: dict, name_by_id: dict = None) -> str:
       "A **ban** has been executed"     -> ban
       "An **unban** has been executed"  -> unban
       "A **kick** has been executed"    -> kick
-      "A **warning** has been issued"   -> warn
+      "A **note** has been added"       -> note
+      "A **warning** has been issued"   -> note  (legacy)
       "A **First To** match ..."        -> ft
 
     If `name_by_id` is provided and contains the extracted moderator ID,
@@ -3965,8 +4054,17 @@ def apply_light_theme(app):
     }
     app.setStyleSheet(_build_stylesheet(palette))
 
+class _ReleaseNotesFetchBridge(QObject):
+    # body is `object` so it can carry str or None across threads.
+    fetched = pyqtSignal(str, object)
+
+
 def _show_release_notes_dialog(parent, release_tag):
     """Fetch and display GitHub release notes for the given tag in a modal dialog.
+
+    The HTTP fetch runs on a daemon thread so the GUI stays responsive; the
+    dialog itself is built on the main thread once the worker emits its
+    `fetched` signal (Qt auto-routes the slot to the receiver's thread).
 
     On fetch failure (offline, GitHub unreachable, 404), shows a minimal fallback
     dialog with a clickable link to the release page so the user can view notes
@@ -3983,63 +4081,75 @@ def _show_release_notes_dialog(parent, release_tag):
     api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/{release_tag}"
     web_url = f"https://github.com/{GITHUB_REPO}/releases/tag/{release_tag}"
 
-    body = None
-    title = release_tag
-    try:
-        req = urllib.request.Request(
-            api_url,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "Chiv2AdminDashboard",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=5.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        title = data.get("name") or data.get("tag_name") or release_tag
-        body = (data.get("body") or "").strip()
-    except Exception as e:
-        print(f"[POST-UPDATE] Failed to fetch release notes for {release_tag}: {e}")
+    # Parented to `parent` so the bridge (and its signal connection) is cleaned
+    # up with the dashboard rather than leaking.
+    bridge = _ReleaseNotesFetchBridge(parent)
 
-    dlg = QDialog(parent)
-    dlg.setWindowTitle(f"What's new — {title}")
-    layout = QVBoxLayout(dlg)
-    layout.setContentsMargins(15, 15, 15, 15)
-    layout.setSpacing(10)
+    def _build_and_show(title, body):
+        dlg = QDialog(parent)
+        dlg.setWindowTitle(f"What's new — {title}")
+        dlg_layout = QVBoxLayout(dlg)
+        dlg_layout.setContentsMargins(15, 15, 15, 15)
+        dlg_layout.setSpacing(10)
 
-    header = QLabel(f"<h2 style='margin:0'>{title}</h2>")
-    layout.addWidget(header)
+        header = QLabel(f"<h2 style='margin:0'>{title}</h2>")
+        dlg_layout.addWidget(header)
 
-    if body is None:
-        dlg.resize(520, 200)
-        msg = QLabel(
-            f"Release <b>{release_tag}</b> has been installed.<br><br>"
-            f"Release notes couldn't be fetched right now (you may be offline "
-            f"or GitHub is unreachable).<br><br>"
-            f"You can view them here once you're back online:<br>"
-            f'<a href="{web_url}">{web_url}</a>'
-        )
-        msg.setWordWrap(True)
-        msg.setOpenExternalLinks(True)
-        msg.setTextInteractionFlags(Qt.TextBrowserInteraction)
-        layout.addWidget(msg)
-        layout.addStretch(1)
-    else:
-        dlg.resize(640, 500)
-        browser = QTextBrowser()
-        browser.setOpenExternalLinks(True)
-        text = body if body else "_No release notes provided for this release._"
-        # setMarkdown requires Qt >= 5.14; fall back to plain text otherwise.
+        if body is None:
+            dlg.resize(520, 200)
+            msg = QLabel(
+                f"Release <b>{release_tag}</b> has been installed.<br><br>"
+                f"Release notes couldn't be fetched right now (you may be offline "
+                f"or GitHub is unreachable).<br><br>"
+                f"You can view them here once you're back online:<br>"
+                f'<a href="{web_url}">{web_url}</a>'
+            )
+            msg.setWordWrap(True)
+            msg.setOpenExternalLinks(True)
+            msg.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            dlg_layout.addWidget(msg)
+            dlg_layout.addStretch(1)
+        else:
+            dlg.resize(640, 500)
+            browser = QTextBrowser()
+            browser.setOpenExternalLinks(True)
+            text = body if body else "_No release notes provided for this release._"
+            # setMarkdown requires Qt >= 5.14; fall back to plain text otherwise.
+            try:
+                browser.setMarkdown(text)
+            except (AttributeError, TypeError):
+                browser.setPlainText(text)
+            dlg_layout.addWidget(browser)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok)
+        btns.accepted.connect(dlg.accept)
+        dlg_layout.addWidget(btns)
+
+        dlg.exec_()
+        bridge.deleteLater()
+
+    bridge.fetched.connect(_build_and_show)
+
+    def _fetch():
+        body = None
+        title = release_tag
         try:
-            browser.setMarkdown(text)
-        except (AttributeError, TypeError):
-            browser.setPlainText(text)
-        layout.addWidget(browser)
+            req = urllib.request.Request(
+                api_url,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "Chiv2AdminDashboard",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            title = data.get("name") or data.get("tag_name") or release_tag
+            body = (data.get("body") or "").strip()
+        except Exception as e:
+            print(f"[POST-UPDATE] Failed to fetch release notes for {release_tag}: {e}")
+        bridge.fetched.emit(str(title), body)
 
-    btns = QDialogButtonBox(QDialogButtonBox.Ok)
-    btns.accepted.connect(dlg.accept)
-    layout.addWidget(btns)
-
-    dlg.exec_()
+    threading.Thread(target=_fetch, name="release-notes-fetch", daemon=True).start()
 
 
 def main():
@@ -4164,7 +4274,9 @@ def main():
 
     # Post-update "What's new?" banner: fires only on the first launch after
     # the autoupdater applied a new release (the flag was already consumed at
-    # the top of main() and removed from sys.argv).
+    # the top of main() and removed from sys.argv). The call returns
+    # immediately — the dialog opens once the worker thread finishes the
+    # GitHub fetch and emits its signal back to the main thread.
     if post_update_tag:
         try:
             _show_release_notes_dialog(window, post_update_tag)

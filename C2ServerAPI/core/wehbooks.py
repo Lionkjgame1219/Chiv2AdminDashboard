@@ -308,9 +308,9 @@ def MessageForAdmin(user_id, username, reason, duration_or_msg, category):
             inline=False
         )
 
-    elif category == "warn":
+    elif category == "note":
         embed.color = 0xD4AC0D
-        embed.description = "A **warning** has been issued"
+        embed.description = "A **note** has been added"
         embed.add_field(
             name="Information",
             value=f"\nPlayFabID: {user_id}\nUsername: {username}\nReason: {reason}",

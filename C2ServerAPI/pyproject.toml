@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "AdminDashBoard"
-version = "5.0.1"
+version = "5.0.2"
 description = "A dashboard to simplify adminstrative tasks on a Chivalry 2 server."
 authors = ["OVA"]
 readme = "README.md"
