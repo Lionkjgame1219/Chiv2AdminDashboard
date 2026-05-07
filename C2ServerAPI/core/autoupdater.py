@@ -397,13 +397,12 @@ def _run_apply_update(
                 pass
         return
 
-    # Launch updated exe.
+    # Launch updated exe. The new version detects "first launch since an
+    # update was applied" by diffing markers in the state file we just
+    # wrote above, so no extra argv flag is needed here.
     try:
         _safe_status(status_callback, "Launching updated version...")
-        launch_args = [target]
-        if release_tag:
-            launch_args.append(f"--post-update={release_tag}")
-        launch_args.extend(passthrough)
+        launch_args = [target] + passthrough
         subprocess.Popen(launch_args, close_fds=True)
         # User requested removing the old version: best-effort cleanup of the backup.
         try:

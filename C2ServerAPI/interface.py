@@ -4059,16 +4059,67 @@ class _ReleaseNotesFetchBridge(QObject):
     fetched = pyqtSignal(str, object)
 
 
-def _show_release_notes_dialog(parent, release_tag):
-    """Fetch and display GitHub release notes for the given tag in a modal dialog.
+def _should_show_post_update_notes() -> bool:
+    """True if the running exe was just installed by the autoupdater and we
+    haven't yet shown its release notes.
+
+    Compares two markers in the autoupdater state file:
+      - `installed_local_file_version` is written by the autoupdater
+        (current AND historical versions back to v4.5.4) every time it
+        successfully applies an update.
+      - `notes_shown_for_local_version` is written by us once the dialog
+        is acknowledged, so we don't re-show it on every launch.
+
+    State-based detection is used instead of the old `--post-update=` argv
+    flag because that flag depends on the *old* updater knowing to set it
+    — older releases (e.g. v4.5.4) don't, so a v4.5.4 → current upgrade
+    would never trigger the dialog. The state file was already being
+    written by those older updaters, so it's the reliable signal.
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+    try:
+        from core.autoupdater import _load_state
+        st = _load_state()
+        installed_v = st.get("installed_local_file_version")
+        if not installed_v:
+            return False
+        return st.get("notes_shown_for_local_version") != installed_v
+    except Exception as e:
+        print(f"[POST-UPDATE] State check failed: {e}")
+        return False
+
+
+def _mark_post_update_notes_shown() -> None:
+    """Persist `notes_shown_for_local_version` so the dialog won't appear
+    on subsequent launches of the same installed version.
+    """
+    try:
+        from core.autoupdater import _load_state, _save_state
+        st = _load_state()
+        installed_v = st.get("installed_local_file_version")
+        if installed_v:
+            st["notes_shown_for_local_version"] = installed_v
+            _save_state(st)
+    except Exception as e:
+        print(f"[POST-UPDATE] Failed to persist notes-shown marker: {e}")
+
+
+def _show_release_notes_dialog(parent):
+    """Fetch and display the latest GitHub release notes in a modal dialog.
 
     The HTTP fetch runs on a daemon thread so the GUI stays responsive; the
     dialog itself is built on the main thread once the worker emits its
-    `fetched` signal (Qt auto-routes the slot to the receiver's thread).
+    `fetched` signal (forced QueuedConnection routes the slot to the bridge's
+    thread, never the worker).
 
-    On fetch failure (offline, GitHub unreachable, 404), shows a minimal fallback
-    dialog with a clickable link to the release page so the user can view notes
-    manually when back online.
+    Targets `/releases/latest` — the user has just been autoupdated to the
+    newest release, so that's what they're running and what they want notes
+    for. Avoids guessing tag-name conventions from the stored semver.
+
+    On fetch failure (offline, GitHub unreachable), shows a minimal fallback
+    dialog with a clickable link to the releases page so the user can view
+    notes manually when back online.
     """
     import urllib.request
     from PyQt5.QtWidgets import QTextBrowser
@@ -4078,8 +4129,8 @@ def _show_release_notes_dialog(parent, release_tag):
     except Exception:
         GITHUB_REPO = "Lionkjgame1219/Chiv2AdminDashboard"
 
-    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/{release_tag}"
-    web_url = f"https://github.com/{GITHUB_REPO}/releases/tag/{release_tag}"
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    web_url = f"https://github.com/{GITHUB_REPO}/releases/latest"
 
     # Parented to `parent` so the bridge (and its signal connection) is cleaned
     # up with the dashboard rather than leaking.
@@ -4098,9 +4149,9 @@ def _show_release_notes_dialog(parent, release_tag):
         if body is None:
             dlg.resize(520, 200)
             msg = QLabel(
-                f"Release <b>{release_tag}</b> has been installed.<br><br>"
-                f"Release notes couldn't be fetched right now (you may be offline "
-                f"or GitHub is unreachable).<br><br>"
+                "A new version has been installed.<br><br>"
+                "Release notes couldn't be fetched right now (you may be offline "
+                "or GitHub is unreachable).<br><br>"
                 f"You can view them here once you're back online:<br>"
                 f'<a href="{web_url}">{web_url}</a>'
             )
@@ -4126,13 +4177,21 @@ def _show_release_notes_dialog(parent, release_tag):
         dlg_layout.addWidget(btns)
 
         dlg.exec_()
+        # Persist after the user has actually seen the dialog, so a crash
+        # on the dashboard right after the update doesn't suppress the
+        # notes on the next launch.
+        _mark_post_update_notes_shown()
         bridge.deleteLater()
 
-    bridge.fetched.connect(_build_and_show)
+    # Explicit QueuedConnection: the slot is a free Python function (closure),
+    # so AutoConnection can't always infer that the slot must run on the
+    # bridge's thread (the GUI thread). Forcing Queued guarantees the dialog
+    # is built on the main thread, never on the fetch worker thread.
+    bridge.fetched.connect(_build_and_show, Qt.QueuedConnection)
 
     def _fetch():
         body = None
-        title = release_tag
+        title = "Latest release"
         try:
             req = urllib.request.Request(
                 api_url,
@@ -4143,29 +4202,16 @@ def _show_release_notes_dialog(parent, release_tag):
             )
             with urllib.request.urlopen(req, timeout=5.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-            title = data.get("name") or data.get("tag_name") or release_tag
+            title = data.get("name") or data.get("tag_name") or title
             body = (data.get("body") or "").strip()
         except Exception as e:
-            print(f"[POST-UPDATE] Failed to fetch release notes for {release_tag}: {e}")
+            print(f"[POST-UPDATE] Failed to fetch release notes: {e}")
         bridge.fetched.emit(str(title), body)
 
     threading.Thread(target=_fetch, name="release-notes-fetch", daemon=True).start()
 
 
 def main():
-    # Parse (and strip) --post-update=<tag> before any update checks, so this
-    # flag can never propagate into a subsequent update's passthrough argv.
-    post_update_tag = None
-    _filtered_argv = []
-    for _a in sys.argv:
-        if _a.startswith("--post-update="):
-            _val = _a.split("=", 1)[1]
-            if _val:
-                post_update_tag = _val
-        else:
-            _filtered_argv.append(_a)
-    sys.argv[:] = _filtered_argv
-
     # ---- Auto-update (Windows packaged .exe only) ----
     # If an update is available, a temporary updater copy of this executable is spawned,
     # this process exits, the updater replaces the old .exe, and then relaunches the app.
@@ -4272,14 +4318,16 @@ def main():
     # local history file is refreshed without any user action.
     _schedule_silent_discord_scrape(window)
 
-    # Post-update "What's new?" banner: fires only on the first launch after
-    # the autoupdater applied a new release (the flag was already consumed at
-    # the top of main() and removed from sys.argv). The call returns
-    # immediately — the dialog opens once the worker thread finishes the
-    # GitHub fetch and emits its signal back to the main thread.
-    if post_update_tag:
+    # Post-update "What's new?" banner: fires on the first launch after the
+    # autoupdater applied a new release. Detection is done via the
+    # autoupdater state file (see _should_show_post_update_notes) rather
+    # than an argv flag, so it works even when the *previous* version's
+    # updater didn't know to set such a flag. The call returns immediately
+    # — the dialog opens once the worker thread finishes the GitHub fetch
+    # and emits its signal back to the main thread.
+    if _should_show_post_update_notes():
         try:
-            _show_release_notes_dialog(window, post_update_tag)
+            _show_release_notes_dialog(window)
         except Exception as e:
             print(f"[POST-UPDATE] Release notes dialog failed: {e}")
 
