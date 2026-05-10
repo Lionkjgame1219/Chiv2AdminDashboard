@@ -503,6 +503,16 @@ class ActionForm(QDialog):
         is_ban = (action_name.lower() == "ban")
         self.preset_slots = list(range(0, 5)) if is_ban else list(range(5, 10))
 
+        # Warnings are Discord-only, so the in-game toggle is irrelevant
+        # for them — hide the checkbox entirely in that case.
+        if action_name.lower() != "note":
+            self.notify_in_game = QCheckBox("Notify in-game")
+            self.notify_in_game.setChecked(ActionForm._notify_in_game_last)
+            self.notify_in_game.toggled.connect(ActionForm._remember_notify_in_game)
+            main_layout.addWidget(self.notify_in_game)
+        else:
+            self.notify_in_game = None
+
         preset_layout.addWidget(
             _make_tip_badge("Hover a Load button to preview the saved reason"
                             + (" and duration" if is_ban else "")),

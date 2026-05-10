@@ -39,6 +39,7 @@ class Chivalry:
         win32process.AttachThreadInput(win32api.GetCurrentThreadId(), remote_thread, True)
         win32gui.SetFocus(hwnd)
         win32gui.SetForegroundWindow(hwnd)
+        sleep(0.5) #window focus also seem to need a warmup period to avoid race condition with short commands (e.g. listplayers)
 
 
 

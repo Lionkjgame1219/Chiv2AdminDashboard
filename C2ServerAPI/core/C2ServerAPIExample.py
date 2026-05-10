@@ -12,7 +12,6 @@ class GameChivalry():
         from time import sleep
         self.game.openConsole()
         self.game.consoleSend("listplayers")
-        self.game.openConsole()
 
     def banbyid(self, id, time, reason):
         self.game.openConsole()
