@@ -41,11 +41,13 @@ pyinstaller --onefile --noconsole --icon=[PathToAn".ico"Image] --name=[NameOfThe
 
 ---------
 
+- On launch, if Chivalry 2 is not already running, you will be greeted by a waiting dialog that pings every second for the game window. You can either let it wait, skip it manually, or use the **"Launch via Steam"**, **"Launch via Epic Games"** or **"Launch via Xbox"** shortcut buttons to start the game directly from the dashboard.
+
+  <img width="518" height="388" alt="image" src="https://github.com/user-attachments/assets/669323dc-d1b3-48eb-9dd8-3de9acb24be9" />
+
+- The compiled version of the program will also check GitHub for a new release at startup. If one is available, it will silently download and apply it before relaunching itself, so you should always be running the latest version without any manual intervention. After an autoupdate, a **"What's new?"** dialog will pop up on the next launch to display the release notes of the version that was just installed.
+
 - As soon as you will open up the program, you will be prompted to add a Discord Webhook link, so that the script can send a message in the channel of your Webhook for every action you made.
-
-  <img width="896" height="160" alt="image" src="https://github.com/user-attachments/assets/146dd603-8d89-43d6-86e6-efcb44a18a5c" />
-
-  <img width="896" height="159" alt="image" src="https://github.com/user-attachments/assets/bc2f2a30-82fe-4a01-8bb3-98547332d196" />
 
   Useful for keeping a per server history of bans, allowing anyone to review the name of the person who did the action, the duration and the reason of a kick / ban, and the PlayFabID, in case you want to undo a ban.
 
@@ -56,8 +58,6 @@ pyinstaller --onefile --noconsole --icon=[PathToAn".ico"Image] --name=[NameOfThe
   Note that it is possible to set a second Webhook link. Can be used to send the same notifications to another server, in case you want to have a discord server with a ban history shared to another clan or in-game server owner.
 
 - Then, you will be prompted to enter your Discord ID (only if you're using Webhooks). Necessary to let the bot know that **you** did the command.
-
-  <img width="249" height="174" alt="image" src="https://github.com/user-attachments/assets/9c1ff164-7b82-40d7-9353-b9179e5960b7" />
 
   Here's how to find it :
 
@@ -71,21 +71,11 @@ pyinstaller --onefile --noconsole --icon=[PathToAn".ico"Image] --name=[NameOfThe
 
 You will now have access to the dashboard. Everything should be pretty straightforward.
 
-<img width="1398" height="836" alt="image" src="https://github.com/user-attachments/assets/3d35ea77-4746-4baf-ab72-9c1b94ffb5ba" />
+<img width="1400" height="1132" alt="image" src="https://github.com/user-attachments/assets/b60a9fef-aa48-401e-ae7e-26773741c6ff" />
 
 - **"Players List"** is going to open up a new window, in which you are gonna have an empty board and a button to refresh the list of all the players connected to the server you are currently playing on.
 
-   <img width="596" height="831" alt="image" src="https://github.com/user-attachments/assets/5f8edc12-2039-4b5b-b114-9f837605e40e" />
-
----------
-
-   This feature may, sometimes, not work at every refreshes.   
-   
----------
-
-  After the board is populated, you can click on a player to have access to three buttons :
-
-  <img width="378" height="238" alt="image" src="https://github.com/user-attachments/assets/f4098304-c866-4068-8799-a226497c08c0" />  
+  After the board is populated, you can click on a player to have access to five buttons, and the right side of the window will display the full sanction history of the selected player (pulled from the Discord logs scrapping feature described further below) :
 
    1. One for banning him, which will ask you for every informations needed for the ban.
 
@@ -95,14 +85,9 @@ You will now have access to the dashboard. Everything should be pretty straightf
 
          b - Ban reason **(e.g. "This is a duel server, FFA / RDM is prohibited.")**
 
-      <img width="464" height="526" alt="image" src="https://github.com/user-attachments/assets/d5cc85aa-ec32-4d7b-94a5-0792ea683fb9" />
-
-      **New** - You can now use three quick preset buttons to quickly apply a ban for the most common reasons (FFA 24h, FFA permaban, and cheating permaban).
-      
+      You can use quick preset buttons to quickly apply a ban for the most common reasons (FFA 24h, FFA permaban, and cheating permaban).      
 
    2. Another one to simply kick him. Only a reason is gonna be required, not a duration (kicking via command has no duration, the player can come back right after).
-
-      <img width="463" height="486" alt="image" src="https://github.com/user-attachments/assets/7c922f41-a045-4c88-8673-9dcbe19cc6d5" />   
 
 ---------
 
@@ -110,23 +95,21 @@ You will now have access to the dashboard. Everything should be pretty straightf
    
 ---------
 
-   3. The third button is gonna be a redirect link to the player's tracker profile on the website **"chivalry2stats.com"**, the most visited site for this matter. Useful to find any old username associated to the player's account.
+   3. The third is a Discord-only action. It is meant to record a soft warning or any comment about the player that you want future-you (or other admins watching the same Discord channel) to see when this player is met again. The most recent note within the last 30 days is pinned at the top of the sanction history panel as an "Active Note", which makes repeat offenders easy to spot at a glance.
 
-   4. And the forth will just let you copy in your clipboard the player's PlayFabID.
+   4. The fourth button is gonna be a redirect link to the player's tracker profile on the website **"chivalry2stats.com"**, the most visited site for this matter. Useful to find any old username associated to the player's account.
+
+   5. And the fifth will just let you copy in your clipboard the player's PlayFabID.
 
 Next buttons in the main dashboard :
 
 - **"Add Time"** is just a button to add time to the map. Note that you can provide a negative value to substract time to the map.
 (e.g. "-10" to substract 10 minutes)
 
-   <img width="259" height="130" alt="image" src="https://github.com/user-attachments/assets/4c59d75d-6b20-4794-b1cc-cb611073352b" />
-
-- **New** - **"Unban Player"** is gonna open up a small window in which you can enter a PlayFabID to execute an unban and write a serversay message to confirm the effectiveness of the action.
+- **"Unban Player"** is gonna open up a small window in which you can enter a PlayFabID to execute an unban and write a serversay message to confirm the effectiveness of the action.
 
 
 - **"Match Arbitration"** is a menu that allow you to act as a referee in a match. Here are the options :
-
-   <img width="1097" height="733" alt="image" src="https://github.com/user-attachments/assets/4d6936b9-bf42-40c0-9575-3f26e92669bf" />
 
   a - **Rounds to win** let's you configure the number of rounds to win before declaring the end of the match.
 
@@ -148,33 +131,32 @@ Next buttons in the main dashboard :
  
   j - **Reset board** allow you reset every options listed above.
 
+- **New** - **"Random Pick"** is a companion button to Match Arbitration. It opens a window with two editable tables (a weapon pool and a player pool) and rolls a random pairing on demand. Useful for any "pick a weapon" / "pick a duelist" style of tournament or warm-up :
+
+   - The weapon pool stores a per-row hand tag (1H / 2H) and a per-row "Exclude" flag so you can keep a weapon in the list but skip it from the current roll.
+   - The player pool is the same idea, just with a single "Exclude" column.
+   - **"One-handed only"** and **"Two-handed only"** are global filters that restrict the weapon pool for the current roll.
+   - **"Assign weapon (1 Player)"** rolls one weapon for one player. **"Assign weapons (2 Players)"** rolls two distinct weapons for two distinct players.
+   - The result can be broadcasted to the server through a serversay message directly from the dialog.
+   - Both tables (and the filters) are persisted between launches, so your roster doesn't have to be rebuilt every time.
+
 Let's get back to the main dashboard.
 
 - **"Admin Message"** is going to be sending an "adminsay" command, along with the text you provided.
 
-   <img width="676" height="262" alt="image" src="https://github.com/user-attachments/assets/74d05f32-4ed0-45b6-ae0f-36dc68323e94" />
-
 - **"Server Message"** is basically the same as the admin one, but using the "serversay" command instead.
-
-   <img width="677" height="263" alt="image" src="https://github.com/user-attachments/assets/d1ebd53b-16ec-4872-82cb-fbf64728c6f3" />
 
 - **"Configure Discord Webhook"** is here if need to update or remove a webhook link you provided previously. You can also add one if you never provided it.
 
-   <img width="896" height="160" alt="image" src="https://github.com/user-attachments/assets/146dd603-8d89-43d6-86e6-efcb44a18a5c" />
-
-   <img width="896" height="159" alt="image" src="https://github.com/user-attachments/assets/bc2f2a30-82fe-4a01-8bb3-98547332d196" />
-
 - **"Configure Discord User ID"** is also made to add, update, or remove your Discord User ID.
 
-   <img width="249" height="174" alt="image" src="https://github.com/user-attachments/assets/9c1ff164-7b82-40d7-9353-b9179e5960b7" />
+- **"Set Discord Bot Token"** and **"Set Discord Channel ID"** are the two pieces of configuration needed to enable the Discord logs scrapping feature (detailed in its own section below). The token is the secret of any Discord bot you've invited to your server with read access on the channel where the dashboard's webhooks land; the channel ID is the numeric ID of that very channel (right-click the channel with developer mode enabled, then "Copy Channel ID"). Leave either empty to disable the feature.
+
+- **"Fetch Discord Channel Messages"** triggers a manual scrap of the configured Discord channel. A progress dialog is displayed while the scrap is running. You normally won't need to click it yourself, since the dashboard also runs silent auto-scraps at startup and a couple of seconds after each kick / ban / note, but it is here in case you need to force a refresh (e.g. you just imported a backlog of old logs).
 
 - **"Configure Console Key"** is here if you need to change the key used to open the in-game console.
 
-   <img width="418" height="211" alt="image" src="https://github.com/user-attachments/assets/f31bfd77-c185-4b6f-b605-b494b0efb220" />
-
 - **"Light / Dark Mode"** is just here for your visual comfort, so if, for some reason, you desire to get flashbanged, all of a sudden, you are free to.
-
-   <img width="1396" height="833" alt="image" src="https://github.com/user-attachments/assets/cc6bf5d9-bf76-4bd6-b9eb-a8f9f298fec9" />
 
    Can also be used to enlighten your bedroom, since Chiv server mods are known to live in darkness and loneliness.
 
@@ -184,28 +166,30 @@ For kicks, bans, admin messages, and server messages, you can use preset slots t
 
 Let's imagine you want to save the sentence "This is a duel server, FFA / RDM is prohibited." as a server message preset.
 
-<img width="673" height="259" alt="image" src="https://github.com/user-attachments/assets/a1f58e1e-858c-4728-97f5-8c1148d66f37" />
-
 You would type the sentence in the "Server Message" input text box, and then click on the "Save / Overwrite" button in any slot you want. For the sake of the example, let's say you want to save it in slot 0.
-
-<img width="331" height="136" alt="image" src="https://github.com/user-attachments/assets/57f0952b-1ac0-43c2-8132-cf39d5b97ae2" />
 
 Now, the "Load button" will turn to the green color, which means something is saved in this slot.
 
-<img width="216" height="64" alt="image" src="https://github.com/user-attachments/assets/435cb714-4f43-43a6-a935-b0294c41554f" />
-
 Whenever you want to send this message again, you can simply click on the "Load" button in the "Slot 0" column, and the message will be automatically filled in the input text box. You can then simply click on the "Send Server Message" button to send the message.
-
-<img width="302" height="137" alt="image" src="https://github.com/user-attachments/assets/0a996f26-e44d-4ed2-a549-53e281339290" />
 
 Note that you can hover your cursor over a "Load" button to see what's the text saved into the slot.
 
-<img width="496" height="80" alt="image" src="https://github.com/user-attachments/assets/85159b2f-ab61-4c4a-9be7-890c6daf2963" />
-
 Same concept applies to the presets used for kicks and bans. Note that ban presets also saves the ban duration, along with the reason.
 
-### Features planned for possible future releases
+### Discord logs scrapping
 
-1. Toggleable automated player list refreshes (would also act as an anti-idle bot, bonus feature)
+The dashboard can read back the webhook messages it has sent over time and build a local sanction history out of them. Once enabled, every kick / ban / note / unban / arbitration message that has ever been posted by your dashboard in the configured channel will be parsed, deduplicated, and cached locally.
 
-2. ???
+This unlocks two main features :
+
+- **Per-player sanction history** : right column of the player action panel. As soon as you click a player in the Players List, the panel will display every recorded sanction against that PlayFabID, with the most recent note within the last 30 days pinned at the top as an "Active Note".
+
+- **"Sanction History"** button on the main dashboard : opens a full-history search dialog where you can filter all the cached records by Username and/or PlayFabID. Useful for browsing the historical record without having to first refresh the Players List or know who you're looking for in advance.
+
+To enable the feature, you need to provide two values via the Settings panel :
+
+   1. A **Discord Bot Token** (**"Set Discord Bot Token"**). The bot only needs read access to the log channel — no other permission or message intent is required on the dashboard's side.
+
+   2. The **numeric ID of the log channel** (**"Set Discord Channel ID"**). To copy it, enable Developer Mode in Discord (User Settings -> Advanced -> Developer Mode), then right-click the channel and click "Copy Channel ID".
+
+Once both are set, the scrapping process runs automatically (silently in the background) at startup and shortly after every action you do, so the sanction history stays in sync without any manual click. You can still trigger a manual scrap with the **"Fetch Discord Channel Messages"** button if needed.

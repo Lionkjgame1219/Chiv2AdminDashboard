@@ -13,8 +13,8 @@ import calendar
 from typing import Callable, Optional
 
 # Auto-update for the PyInstaller onefile Windows build.
-# Normal mode: on startup, check GitHub releases for the latest .exe asset and update if needed.
-# Updater mode: invoked as a *separate* executable copy so it can replace the original exe.
+# Normal mode checks GitHub releases at startup. Updater mode runs as a separate
+# exe copy so it can overwrite the original.
 
 GITHUB_REPO = "Lionkjgame1219/Chiv2AdminDashboard"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=10"
@@ -31,20 +31,16 @@ def _safe_status(cb: Optional[Callable[[str], None]], msg: str) -> None:
 
 
 def _maybe_make_qt_progress_ui(title: str = "Updating..."):
-    """Best-effort tiny UI for the updater process (no console in onefile builds).
-
-    Returns a tuple: (status_callback, progress_callback, close_callback)
-    where callbacks can be None.
-    """
+    """Tiny progress window for the updater process. Returns (status, progress, close), any may be None."""
 
     try:
-        # Import locally so source runs / unit tests don't require Qt.
+        # Local import so source runs and unit tests don't require Qt.
         from PyQt5.QtWidgets import QApplication, QLabel, QProgressBar, QVBoxLayout, QWidget
         from PyQt5.QtCore import Qt
 
         app = QApplication.instance()
         if app is None:
-            # Don't forward our argv (contains --apply-update etc.) into Qt.
+            # Pass an empty argv so Qt doesn't see --apply-update etc.
             app = QApplication([])
 
         w = QWidget()
@@ -145,7 +141,7 @@ def _http_json(url: str, timeout_s: float = 5.0):
 
 
 def find_latest_exe_asset(releases, preferred_filename: str = ""):
-    # Prefer stable releases; fall back to pre-releases if no stable exe exists.
+    # Prefer stable releases; fall back to pre-releases only if no stable .exe exists.
     preferred_lc = (preferred_filename or "").strip().lower()
     preferred_stem = os.path.splitext(preferred_lc)[0] if preferred_lc else ""
 
@@ -169,7 +165,7 @@ def find_latest_exe_asset(releases, preferred_filename: str = ""):
             v = parse_semver(name) or tag_ver
 
             name_lc = name.lower()
-            # Prefer the exact current executable name (or containing it) if possible.
+            # Prefer assets whose name matches the running exe.
             if preferred_lc and name_lc == preferred_lc:
                 prefer = 3
             elif preferred_lc and preferred_lc in name_lc:
@@ -220,10 +216,7 @@ def _format_version(v) -> str:
 
 
 def _exe_fingerprint(path: str):
-    """Return a cheap fingerprint for the current executable.
-
-    Used to avoid update loops when file version metadata is missing or stale.
-    """
+    """Cheap (size, mtime) fingerprint used to detect update loops when file version metadata is unreliable."""
 
     try:
         return int(os.path.getsize(path)), int(os.path.getmtime(path))
@@ -236,7 +229,7 @@ def _installed_recently(state: dict, window_s: float = 15 * 60) -> bool:
         ts = state.get("installed_at")
         if not ts:
             return False
-        # Written as UTC: 2025-01-01T00:00:00Z
+        # Stored as UTC ISO-8601, e.g. 2025-01-01T00:00:00Z.
         t = time.strptime(str(ts), "%Y-%m-%dT%H:%M:%SZ")
         installed_epoch = calendar.timegm(t)
         return (time.time() - float(installed_epoch)) <= float(window_s)
@@ -337,7 +330,7 @@ def _run_apply_update(
     progress_callback: Optional[Callable[[Optional[int]], None]] = None,
 ) -> None:
     url, target, remote_ver, release_tag, passthrough = _parse_apply_args(argv)
-    # Never carry a stale --post-update flag forward into a relaunch.
+    # Don't carry a stale --post-update flag into the relaunch.
     passthrough = [a for a in passthrough if not a.startswith("--post-update=")]
     if not url or not target:
         return
@@ -353,23 +346,19 @@ def _run_apply_update(
         _safe_status(status_callback, "Installing update...")
 
         if os.path.exists(target):
-            try:
-                _replace_with_retry(target, backup)
-            except Exception:
-                # If we can't move the old exe out of the way, the update can't be applied.
-                raise
+            # If we can't move the old exe aside, we can't apply the update.
+            _replace_with_retry(target, backup)
 
         _replace_with_retry(dl_path, target)
 
         st = _load_state()
-        # Note: this value is used as an opaque "update id" (usually a semver string like "1.2.3.0").
+        # Opaque "update id", usually a semver string like "1.2.3.0".
         st["installed_remote_version"] = remote_ver
         st["installed_remote_id"] = remote_ver
         st["installed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         st["installed_path"] = target
 
-        # Record a cheap fingerprint so we can recognize that *this* exe is the one we installed,
-        # even if its embedded file version resource is missing/stale.
+        # Fingerprint lets us recognize this exe later if the embedded file version is missing or stale.
         size, mtime = _exe_fingerprint(target)
         st["installed_exe_size"] = size
         st["installed_exe_mtime"] = mtime
@@ -381,7 +370,7 @@ def _run_apply_update(
         _save_state(st)
 
     except Exception as e:
-        # Best-effort fallback: try to relaunch the previous executable.
+        # Fall back to relaunching the previous executable.
         try:
             print(f"[UPDATE] Apply-update failed: {e}")
         except Exception:
@@ -397,14 +386,11 @@ def _run_apply_update(
                 pass
         return
 
-    # Launch updated exe. The new version detects "first launch since an
-    # update was applied" by diffing markers in the state file we just
-    # wrote above, so no extra argv flag is needed here.
+    # The new version detects "first launch after update" via the state file, so no extra argv flag.
     try:
         _safe_status(status_callback, "Launching updated version...")
         launch_args = [target] + passthrough
         subprocess.Popen(launch_args, close_fds=True)
-        # User requested removing the old version: best-effort cleanup of the backup.
         try:
             if os.path.exists(backup):
                 os.remove(backup)
@@ -417,9 +403,8 @@ def _run_apply_update(
 def handle_update_flow(argv=None, status_callback: Optional[Callable[[str], None]] = None) -> bool:
     argv = list(argv or sys.argv[1:])
 
-    # Updater mode
+    # Updater mode: show a minimal progress window since the packaged app has no console.
     if "--apply-update" in argv:
-        # In updater mode, show a minimal progress window if possible (packaged app has no console).
         ui_status = ui_progress = ui_close = None
         if status_callback is None:
             ui_status, ui_progress, ui_close = _maybe_make_qt_progress_ui(title="Updating AdminDashboard")
@@ -431,7 +416,7 @@ def handle_update_flow(argv=None, status_callback: Optional[Callable[[str], None
                 ui_close()
         return True
 
-    # Normal mode (only for the packaged exe)
+    # Normal mode only runs on the packaged exe.
     if (not _is_frozen()) or ("--skip-update" in argv):
         return False
 
@@ -449,9 +434,7 @@ def handle_update_flow(argv=None, status_callback: Optional[Callable[[str], None
 
         installed_id = st.get("installed_remote_id") or st.get("installed_remote_version")
 
-        # Compare using a consistent remote id:
-        # - Prefer a semver extracted from asset name/tag
-        # - Fall back to the release tag
+        # Pick a stable remote id: semver from asset name/tag, else the release tag.
         remote_id = None
         if remote_v:
             try:
@@ -461,8 +444,7 @@ def handle_update_flow(argv=None, status_callback: Optional[Callable[[str], None
         if not remote_id:
             remote_id = pick.get("release_tag") or None
 
-        # Loop prevention: if we already installed this remote_id onto *this* executable,
-        # don't keep applying the same update again.
+        # Loop guard: skip if we already applied this remote_id to this exact exe.
         cur_size, cur_mtime = _exe_fingerprint(exe_path)
         st_size = st.get("installed_exe_size")
         st_mtime = st.get("installed_exe_mtime")
@@ -475,9 +457,8 @@ def handle_update_flow(argv=None, status_callback: Optional[Callable[[str], None
             and int(st_mtime) == int(cur_mtime)
         )
 
-        # If the file timestamp changes (e.g. antivirus / copy / restore), the fingerprint may not match.
-        # If we recorded what file version we *saw* right after installing, use that as an additional
-        # lightweight signal that we're still running the installed exe.
+        # Antivirus/copy/restore can change the file timestamp and break the fingerprint match.
+        # The recorded local file version is a backup signal that this is still the installed exe.
         state_local_v = st.get("installed_local_file_version")
         version_matches_state = bool(state_local_v) and (_format_version(current_v) == str(state_local_v))
 
@@ -498,13 +479,11 @@ def handle_update_flow(argv=None, status_callback: Optional[Callable[[str], None
 
         needs = False
         if already_installed:
-            # We have high confidence we already applied this exact update to this exe.
-            # (Prevents infinite loops when file version metadata doesn't change.)
             needs = False
         elif current_v and remote_v:
             needs = tuple(remote_v) > tuple(current_v)
         elif remote_v:
-            # No readable local file version -> rely on state/fingerprint.
+            # No readable local file version — fall back to state + fingerprint.
             needs = (str(remote_id) != str(installed_id)) or (not fingerprint_matches)
         else:
             needs = pick.get("release_tag") != installed_id
@@ -513,7 +492,7 @@ def handle_update_flow(argv=None, status_callback: Optional[Callable[[str], None
             _safe_status(status_callback, "No updates available.")
             return False
 
-        # Spawn updater from a temp copy of ourselves so the original exe can be replaced.
+        # Run the updater from a temp copy of ourselves so the original exe is free to overwrite.
         tmp = tempfile.gettempdir()
         updater = os.path.join(tmp, f"Chiv2AdminDashboard_updater_{os.getpid()}.exe")
         try:
@@ -521,11 +500,10 @@ def handle_update_flow(argv=None, status_callback: Optional[Callable[[str], None
         except Exception:
             return False
 
-        # Strip any --post-update=... from our own argv before passing it as
-        # the target's passthrough, so a subsequent update can't re-fire it.
+        # Strip --post-update=... so a follow-up update can't re-fire it.
         clean_argv = [a for a in argv if not a.startswith("--post-update=")]
 
-        # IMPORTANT: keep this consistent with the comparison logic above.
+        # Must stay consistent with the comparison logic above.
         remote_ver_s = remote_id or ""
         release_tag_s = str(pick.get("release_tag") or "")
         cmd = [

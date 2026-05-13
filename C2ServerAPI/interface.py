@@ -3,7 +3,9 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QDialog,
     QFormLayout, QLineEdit, QDialogButtonBox, QMessageBox, QListWidget, QHBoxLayout,
     QGroupBox, QSpacerItem, QSizePolicy, QInputDialog, QProgressBar, QCheckBox, QToolTip, QGridLayout,
-    QScrollArea, QFrame, QListWidgetItem, QStyledItemDelegate, QStyle
+    QScrollArea, QFrame, QListWidgetItem, QStyledItemDelegate, QStyle,
+    QTableWidget, QTableWidgetItem, QComboBox, QHeaderView, QAbstractItemView,
+    QStylePainter, QStyleOptionComboBox
 )
 from PyQt5.QtGui import QFont, QIntValidator, QCursor, QDesktopServices, QColor, QBrush
 from PyQt5.QtCore import Qt, QTimer, QObject, QEvent, QUrl, pyqtSignal
@@ -15,18 +17,17 @@ import datetime
 import win32gui
 import re
 import threading
+import random
+from time import sleep
 
 
 from core.C2ServerAPIExample import GameChivalry
 import core.wehbooks as wehbooks
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Design tokens — single source of truth for spacing, radii and accent
-# colours. Kept as module constants (not a separate file by request).
-# ═══════════════════════════════════════════════════════════════════════════
+# Design tokens — single source of truth for spacing, radii and accent colours.
 
-# Spacing scale. Dialogs should compose these rather than pick arbitrary ints.
+# Spacing scale — compose these rather than picking arbitrary ints.
 UI_PAD_OUTER   = 18   # outer dialog margin
 UI_PAD_SECTION = 12   # inside group boxes / between sections
 UI_PAD_INNER   = 8    # between adjacent widgets in a row/column
@@ -35,18 +36,14 @@ UI_PAD_TIGHT   = 6    # header rows, badge rows
 UI_SPACING_SECTION = 14   # between top-level sections in a dialog
 UI_SPACING_INNER   = 8    # between adjacent widgets
 
-# Corner radii
 UI_RADIUS       = 6
 UI_RADIUS_SMALL = 4
 
-# Accent palette. Kept close to the existing #3d5afe brand colour but nudged
-# slightly calmer so it pairs better with the orange / green action accents.
 UI_ACCENT            = '#4a6cf7'
 UI_ACCENT_HOVER      = '#5a7cff'
 UI_ACCENT_PRESSED    = '#3a5ce0'
 
-# Action accents (reused by _colored_button_qss / sanction cards so the
-# whole app uses one red, one orange, etc.)
+# Action accents shared by buttons and sanction cards.
 UI_COLOR_BAN    = '#e74c3c'
 UI_COLOR_KICK   = '#f39c12'
 UI_COLOR_WARN   = '#d4ac0d'
@@ -54,9 +51,7 @@ UI_COLOR_UNBAN  = '#2ecc71'
 UI_COLOR_INFO   = '#3498db'
 UI_COLOR_MUTED  = '#95a5a6'
 
-# Status text colours (used by inline setStyleSheet on status labels; kept
-# identical across themes because Qt's palette doesn't cover these semantics
-# and we want success/danger to read the same in light and dark).
+# Status text colours, kept identical across themes so success/danger read the same in light and dark.
 UI_STATUS_OK      = '#27ae60'
 UI_STATUS_WARN    = '#d4901a'
 UI_STATUS_DANGER  = '#c0392b'
@@ -115,7 +110,7 @@ class InstantToolTipFilter(QObject):
 
 
 def check_chivalry_window():
-    """Check if Chivalry 2 window is available"""
+    """Return True if the Chivalry 2 window is open."""
     try:
         hwnd = win32gui.FindWindow(None, "Chivalry 2  ")
         return hwnd != 0
@@ -206,24 +201,20 @@ class ChivalryWaitingDialog(QDialog):
 
         self.update_theme_button()
 
-        # Use the time the user spends waiting for Chivalry to launch to
-        # parse the discord log into the in-memory cache off the UI thread.
-        # By the time the dashboard opens, cache hits are essentially free.
+        # Warm the discord log cache off the UI thread while the user waits for Chivalry.
         _warm_log_cache_async()
 
     def closeEvent(self, event):
-        """Handle window close button"""
         self.timer.stop()
         event.ignore()
         self.reject()
 
     def reject(self):
-        """Handle dialog rejection"""
         self.timer.stop()
         super().reject()
 
     def toggle_theme(self):
-        """Toggle between dark and light theme"""
+        """Toggle between dark and light theme."""
         app = QApplication.instance()
         current_is_dark = load_theme_preference()
         new_is_dark = not current_is_dark
@@ -241,7 +232,7 @@ class ChivalryWaitingDialog(QDialog):
         self.update()
 
     def update_theme_button(self):
-        """Toggle between dark and light theme"""
+        """Update the theme toggle button's label to reflect the current theme."""
         is_dark = load_theme_preference()
         if is_dark:
             self.theme_button.setText("Light Mode")
@@ -294,11 +285,7 @@ def parse_player_list_from_clipboard(text: str = None):
 
 
 def _make_tip_badge(tooltip_text: str, parent=None) -> QLabel:
-    """Standard '?' tooltip badge used across the dashboard.
-
-    Uses palette roles so it follows the active theme without
-    per-theme restyling on toggle.
-    """
+    """Standard '?' tooltip badge. Theme-agnostic — uses palette roles."""
     lbl = QLabel("?", parent)
     lbl.setToolTip(tooltip_text)
     lbl.setFixedSize(20, 20)
@@ -311,11 +298,10 @@ def _make_tip_badge(tooltip_text: str, parent=None) -> QLabel:
 
 
 def _make_preset_column(slot_idx: int, on_load, on_save, on_clear) -> QVBoxLayout:
-    """Build one Load/Save/Clear stack for a numbered preset slot.
+    """Build a Load/Save/Clear column for a preset slot.
 
-    Returns a QVBoxLayout with the three buttons attached as
-    _btn_load / _btn_save / _btn_clear so the caller can keep
-    references for later restyling.
+    Buttons are attached to the returned layout as _btn_load / _btn_save / _btn_clear
+    so callers can restyle them later.
     """
     col = QVBoxLayout()
     col.setSpacing(6)
@@ -343,17 +329,11 @@ def _make_preset_column(slot_idx: int, on_load, on_save, on_clear) -> QVBoxLayou
 
 
 class _SanctionedRowDelegate(QStyledItemDelegate):
-    """Honors per-item background / foreground brushes set via
-    QListWidgetItem.setBackground / setForeground, even when a global
-    stylesheet targets QListWidget::item.
+    """Respect per-item Background/Foreground brushes even when a stylesheet targets QListWidget::item.
 
-    Qt 5 suppresses data-role colours as soon as ANY ::item rule exists
-    in a stylesheet, and its default paint path also overrides them on
-    hover/selection with the theme's :hover / :selected colours. This
-    delegate paints the background manually, overlays a translucent
-    black to darken on hover/selection (theme-independent), strips
-    those state flags from the option so super() can't repaint over
-    our work, and forces the foreground through option.palette.
+    Qt 5 drops data-role colours as soon as any ::item rule exists, and overrides them again on
+    hover/selection with the theme's colours. We paint the background manually, darken with a
+    translucent overlay for hover/selection, then strip those flags so super() can't paint over us.
     """
     def paint(self, painter, option, index):
         bg = index.data(Qt.BackgroundRole)
@@ -365,9 +345,7 @@ class _SanctionedRowDelegate(QStyledItemDelegate):
                 painter.fillRect(option.rect, QColor(0, 0, 0, 70))
             elif option.state & QStyle.State_MouseOver:
                 painter.fillRect(option.rect, QColor(0, 0, 0, 40))
-            # Strip hover/selection flags so the default paint path
-            # can't redraw the theme's blue selection or grey hover
-            # on top of our overlay.
+            # Drop state flags so super() doesn't repaint the theme selection on top.
             option.state &= ~QStyle.State_Selected
             option.state &= ~QStyle.State_MouseOver
             option.backgroundBrush = QBrush()
@@ -380,13 +358,7 @@ class _SanctionedRowDelegate(QStyledItemDelegate):
 
 
 def _colored_button_qss(color: str) -> str:
-    """QSS for a solid coloured QPushButton with matching hover/pressed shades.
-
-    `color` is a #rrggbb hex. Hover darkens ~15%, pressed ~30%.
-    Avoids the #rrggbbaa (alpha) trick which renders semi-transparent
-    and composites oddly against the parent dialog in Qt 5, and ensures
-    hover doesn't fall back to the theme's generic grey.
-    """
+    """QSS for a solid coloured QPushButton. `color` is #rrggbb; hover darkens ~15%, pressed ~30%."""
     def _shade(factor: float) -> str:
         h = color.lstrip('#')
         r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
@@ -400,12 +372,7 @@ def _colored_button_qss(color: str) -> str:
 
 
 def _populated_preset_qss(is_dark_theme: bool) -> str:
-    """QSS applied to Load preset buttons whose slot has stored content.
-
-    Subtle green tint with a matching hover shade — ensures hover doesn't
-    fall back to the theme's generic grey, which looked wrong against
-    the green normal state.
-    """
+    """QSS for Load buttons whose slot has stored content — green tint with matching hover."""
     if is_dark_theme:
         return (
             "QPushButton { background-color: #2d5a2d; color: #ffffff; }"
@@ -503,8 +470,7 @@ class ActionForm(QDialog):
         is_ban = (action_name.lower() == "ban")
         self.preset_slots = list(range(0, 5)) if is_ban else list(range(5, 10))
 
-        # Warnings are Discord-only, so the in-game toggle is irrelevant
-        # for them — hide the checkbox entirely in that case.
+        # Warnings are Discord-only, so hide the in-game toggle for notes.
         if action_name.lower() != "note":
             self.notify_in_game = QCheckBox("Notify in-game")
             self.notify_in_game.setChecked(ActionForm._notify_in_game_last)
@@ -584,7 +550,7 @@ class ActionForm(QDialog):
         self.update_preset_tooltips()
 
     def load_preset(self, slot):
-        """Load a preset into the inputs"""
+        """Load a preset's reason (and duration, if ban) into the inputs."""
         from core.guiServer import Chivalry
         chiv = Chivalry()
         preset_text = chiv.LoadPreset(slot)
@@ -604,19 +570,16 @@ class ActionForm(QDialog):
             QMessageBox.warning(self, "No Preset", f"No preset found in slot {slot}.")
 
     def apply_ffa_24h_preset(self):
-        """Execute FFA 24h ban"""
         self.execute_quick_preset("FFA", 24)
 
     def apply_ffa_perma_preset(self):
-        """Execute FFA permaban"""
         self.execute_quick_preset("FFA", 999999)
 
     def apply_cheating_preset(self):
-        """Execute Cheating permaban"""
         self.execute_quick_preset("Cheating", 999999)
 
     def execute_quick_preset(self, reason, duration_hours):
-        """Execute a quick preset"""
+        """Run the action with a preset reason and duration, then restore the user's inputs."""
         saved_reason = self.reason_input.text()
         saved_duration = self.time_input.text() if self.time_input is not None else None
 
@@ -631,7 +594,7 @@ class ActionForm(QDialog):
             self.time_input.setText(saved_duration)
 
     def save_preset(self, slot):
-        """Save the current reason to a preset slot"""
+        """Save the current reason (and ban duration, if any) into a preset slot."""
         reason = self.reason_input.text().strip()
         if not reason:
             QMessageBox.warning(self, "Empty Reason", "Please enter a reason before saving to preset.")
@@ -653,7 +616,7 @@ class ActionForm(QDialog):
             QMessageBox.warning(self, "Save Failed", f"Failed to save preset {slot}.")
 
     def update_preset_tooltips(self):
-        """Update tooltips for load buttons to show preset contents"""
+        """Refresh load-button tooltips and tinting based on saved preset content."""
         from core.guiServer import Chivalry
         chiv = Chivalry()
         presets = chiv.GetAllPresets()
@@ -679,7 +642,7 @@ class ActionForm(QDialog):
                 btn.setStyleSheet("")
 
     def clear_preset(self, slot):
-        """Clear a preset slot"""
+        """Wipe a preset slot."""
         from core.guiServer import Chivalry
         chiv = Chivalry()
         success = chiv.SavePreset(slot, "")
@@ -722,7 +685,7 @@ class ActionForm(QDialog):
 
         elif self.action_name.lower() == "note":
             print(f"[NOTE] Player ID={player_id}, Reason={reason}")
-            # Note is Discord-only — no in-game command needed
+            # Notes only go to Discord — no in-game command.
             wehbooks.MessageForAdmin(player_id, player_name, reason, None, "note")
             set_persisted_value('last_kick_reason', reason)
             _schedule_silent_discord_scrape(self)
@@ -748,11 +711,7 @@ class ActionForm(QDialog):
         self.accept()
 
 def _load_all_sanctions() -> list:
-    """Return every record from discordlogshistory, oldest-first.
-
-    Backed by the in-memory cache; the returned list is the cache's own
-    storage, so callers must treat it as read-only.
-    """
+    """Return all discordlogshistory records oldest-first. Read-only — backed by the in-memory cache."""
     return _read_log_cached()[1]
 
 
@@ -765,14 +724,10 @@ def _load_sanctions_for_player(player_id: str) -> list:
 
 
 def _compute_all_player_statuses() -> dict:
-    """Single-pass scan of discordlogshistory.
+    """Single-pass scan of discordlogshistory returning {playfab_id_upper: 'banned' | 'cautioned'}.
 
-    Returns {playfab_id_upper: 'banned' | 'cautioned'} for players whose
-    most severe current status is non-None. 'banned' wins over 'cautioned'.
-
-    An unban record lifts any earlier ban: a player counts as banned only
-    if they have a currently-active ban whose timestamp is later than the
-    most recent unban for that same PlayFabID.
+    'banned' wins over 'cautioned'. A ban only counts if it's still active *and* its timestamp
+    is after the player's most recent unban.
     """
     now           = datetime.datetime.now(datetime.timezone.utc)
     one_week_ago  = now - datetime.timedelta(days=7)
@@ -799,7 +754,7 @@ def _compute_all_player_statuses() -> dict:
             dur = record.get('Duration', '') or ''
             if dur:
                 try:
-                    # Tolerant of "24h", "24 hours", " 24 ", "24hh" etc.
+                    # Accepts "24h", "24 hours", " 24 ", "24hh", etc.
                     m = re.search(r'-?\d+(?:\.\d+)?', str(dur))
                     if m:
                         hours = float(m.group(0))
@@ -827,12 +782,7 @@ def _compute_all_player_statuses() -> dict:
 
 
 class _ThemeBus(QObject):
-    """Broadcasts theme toggles to live theme-aware widgets.
-
-    Subscribers connect to `theme_changed` on construction and
-    disconnect on destruction. Used by sanction cards so they
-    re-tint without needing to be rebuilt.
-    """
+    """Broadcasts theme toggles so live widgets can re-tint without being rebuilt."""
     theme_changed = pyqtSignal(bool)  # True = dark, False = light
 
 
@@ -840,18 +790,12 @@ _theme_bus = _ThemeBus()
 
 
 def _format_sanction_timestamp(ts_raw: str) -> tuple:
-    """Format an ISO-8601 UTC timestamp for display in a sanction card.
+    """Return (display, tooltip) for UTC timestamp on a sanction card.
 
-    Returns (display, tooltip):
-      - display: 'YYYY-MM-DD  HH:MM TZ' in the viewer's local timezone,
-        where TZ is the OS-reported abbreviation (Windows often returns
-        long names like 'Eastern Standard Time' — those are condensed to
-        their initials, e.g. 'EST'). Falls back to a 'UTC±HH:MM' offset
-        when no name is available.
-      - tooltip: the original UTC timestamp, so reviewers can cross-
-        reference against logs that record times in UTC.
-
-    On parse failure both values fall back to the raw input.
+    `display` is rendered in local time with a short timezone label (long Windows names
+    like 'Eastern Standard Time' get condensed to 'EST'; falls back to 'UTC±HH:MM').
+    `tooltip` is the original UTC time so reviewers can cross-reference against logs.
+    Both fall back to the raw input on parse failure.
     """
     if not ts_raw:
         return '', ''
@@ -880,21 +824,14 @@ def _format_sanction_timestamp(ts_raw: str) -> tuple:
 
 def _build_sanction_card(record: dict, is_dark: bool = None,
                          embed_playfabid: bool = False) -> QFrame:
-    """Card representing one sanction record.
+    """Build a card widget for one sanction record.
 
-    Visual language matches the app's QGroupBox containers: themed
-    base background, subtle border, 8px radius. The action type is
-    communicated through a small coloured badge in the header, with
-    the username promoted alongside it so the card scans at a glance.
+    Pass `is_dark` to avoid re-reading the theme preference when building many cards in a row.
+    Pass `embed_playfabid=True` to include a PlayFabID row inside the card — used by the
+    sanction search dialog where cards appear without a per-player header.
 
-    Pass `is_dark` to avoid repeated theme-preference reads when
-    building many cards in a row. Pass `embed_playfabid=True` to
-    include a PlayFabID row inside the card - used by the sanction
-    search dialog where cards appear without a per-player header.
-
-    Live theme updates: each card subscribes to `_theme_bus.theme_changed`
-    and re-applies its themed stylesheet in place. The subscription is
-    torn down when the frame is destroyed, so closed dialogs don't leak.
+    Each card subscribes to `_theme_bus.theme_changed` to re-tint live, and unsubscribes on
+    destruction so closed dialogs don't leak.
     """
     if is_dark is None:
         is_dark = load_theme_preference()
@@ -904,8 +841,7 @@ def _build_sanction_card(record: dict, is_dark: bool = None,
     reason   = record.get('Reason',   '')
     username = record.get('Username', '')
 
-    # Action -> label + badge colour. Legacy records without an 'action'
-    # key are inferred from which fields are populated.
+    # Legacy records without an 'action' key are inferred from which fields are populated.
     if action == 'ban'   or (not action and duration):
         action_label, accent = 'BAN',     UI_COLOR_BAN
     elif action == 'kick' or (not action and reason and username):
@@ -927,7 +863,7 @@ def _build_sanction_card(record: dict, is_dark: bool = None,
     layout.setContentsMargins(12, 9, 12, 9)
     layout.setSpacing(5)
 
-    # -- Header: badge + username + timestamp -----------------------------
+    # Header: badge + username + timestamp.
     header = QHBoxLayout()
     header.setSpacing(8)
 
@@ -953,7 +889,6 @@ def _build_sanction_card(record: dict, is_dark: bool = None,
     header.addWidget(lbl_ts)
     layout.addLayout(header)
 
-    # -- Theme-dependent styling (re-applicable) --------------------------
     def _apply_theme(dark: bool):
         if dark:
             bg, border, muted, key_col = '#353535', '#555555', '#aaaaaa', '#b5b5b5'
@@ -978,8 +913,7 @@ def _build_sanction_card(record: dict, is_dark: bool = None,
     _apply_theme(is_dark)
     _theme_bus.theme_changed.connect(_apply_theme)
 
-    # Closures hold strong refs through the signal connection; release
-    # them when the frame dies so sanction dialogs don't leak cards.
+    # Release the closure ref on destruction so sanction dialogs don't leak cards.
     def _cleanup():
         try:
             _theme_bus.theme_changed.disconnect(_apply_theme)
@@ -1005,7 +939,7 @@ def _build_sanction_card(record: dict, is_dark: bool = None,
         row.addWidget(val, 1)
         layout.addLayout(row)
 
-    # Username is rendered in the header; no longer a body row.
+    # Username lives in the header; only the PlayFabID needs a body row.
     if embed_playfabid:
         _add_row('PlayFabID', record.get('PlayFabID', ''))
     _add_row('Reason',   reason)
@@ -1033,7 +967,7 @@ class PlayerActionDialog(QDialog):
         root.setSpacing(UI_SPACING_SECTION)
         root.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
 
-        # ── Left: Actions group ───────────────────────────────────────
+        # Left column: Actions group.
         actions_group = QGroupBox("Actions")
         left = QVBoxLayout(actions_group)
         left.setSpacing(UI_PAD_INNER)
@@ -1061,8 +995,7 @@ class PlayerActionDialog(QDialog):
             b.clicked.connect(slot)
             return b
 
-        # No trailing stretch — buttons share all remaining vertical space
-        # equally so the column never leaves a dead zone at the bottom.
+        # Buttons share remaining vertical space evenly — no trailing stretch.
         left.addWidget(_action_btn("Ban",                    UI_COLOR_BAN,   self.ban_player),          1)
         left.addWidget(_action_btn("Kick",                   UI_COLOR_KICK,  self.kick_player),         1)
         left.addWidget(_action_btn("Add a note",                   UI_COLOR_WARN,  self.note_player),         1)
@@ -1072,9 +1005,7 @@ class PlayerActionDialog(QDialog):
         actions_group.setFixedWidth(250)
         root.addWidget(actions_group)
 
-        # ── Right: sanction history ──────────────────────────────────
-        # Stored on self so a post-scrape signal can clear and rebuild
-        # this column without recreating the dialog.
+        # Right column: sanction history. Stored on self so a post-scrape signal can rebuild it.
         self._right_col = QVBoxLayout()
         self._right_col.setSpacing(UI_SPACING_INNER)
         self._rebuild_sanction_history()
@@ -1083,13 +1014,8 @@ class PlayerActionDialog(QDialog):
         _get_sanctions_bus().sanctionsUpdated.connect(self._rebuild_sanction_history)
 
     def _rebuild_sanction_history(self):
-        """(Re)populate the right-hand column with the current sanction
-        history for this player. Called once from __init__ and again
-        whenever a scrape lands new records.
-        """
-        # Tear down whatever is currently in the column. deleteLater
-        # schedules the QWidgets for cleanup on the next event-loop tick,
-        # which is safe even mid-paint.
+        """Repopulate the right column with this player's sanctions. Re-runs when a scrape lands new records."""
+        # deleteLater schedules cleanup on the next event-loop tick — safe even mid-paint.
         while self._right_col.count():
             item = self._right_col.takeAt(0)
             w = item.widget()
@@ -1101,7 +1027,7 @@ class PlayerActionDialog(QDialog):
         now       = datetime.datetime.now(datetime.timezone.utc)
         month_ago = now - datetime.timedelta(days=30)
 
-        # Most-recent note, only kept if issued within 30 days
+        # Pin the most recent note if it's within the last 30 days.
         pinned_note = None
         for record in reversed(sanctions):
             if record.get('action') in ('warn', 'note'):
@@ -1175,10 +1101,9 @@ class PlayerActionDialog(QDialog):
         form.exec_()
 
     def open_player_profile(self):
-        """Open the player's profile page on chivalry2stats.com"""
+        """Open the player's chivalry2stats.com profile in the browser."""
         profile_url = f"https://chivalry2stats.com/player?id={self.player_id}"
 
-        # Import webbrowser to open the URL
         import webbrowser
         try:
             webbrowser.open(profile_url)
@@ -1189,6 +1114,57 @@ class PlayerActionDialog(QDialog):
                 "Error",
                 f"Failed to open player profile:\n{str(e)}"
             )
+
+class _PlayerListResolveWorker(QObject):
+    """Off-thread parser and status resolver for the player list.
+
+    Parses `listplayers` clipboard text into (name, pid) pairs, resolves each player's
+    sanction status, and emits one row at a time so the UI fills in progressively rather
+    than landing in one batch.
+
+    Pass `text=` for a fresh capture, or `pairs=` to re-resolve statuses for an existing
+    roster (used when a scrape lands and only row colours need refreshing).
+
+    Status resolution can be precomputed externally: pass `statuses_event` + `statuses_holder`
+    to have the worker wait on a parallel precompute. If it doesn't finish in time, the worker
+    computes statuses itself.
+    """
+    entry    = pyqtSignal(str, str, str)   # name, pid, status_or_empty
+    finished = pyqtSignal()
+
+    def __init__(self, text=None, pairs=None, statuses_event=None, statuses_holder=None):
+        super().__init__()
+        self._text  = text
+        self._pairs = pairs
+        self._statuses_event  = statuses_event
+        self._statuses_holder = statuses_holder
+
+    def run(self):
+        try:
+            if self._pairs is None:
+                pairs = parse_player_list_from_clipboard(self._text or '')
+            else:
+                pairs = list(self._pairs)
+            statuses = self._resolve_statuses()
+            for name, pid in pairs:
+                self.entry.emit(name, pid, statuses.get(pid.upper(), ''))
+                # Yield so Qt can paint each row between emits — without this the queue
+                # fills faster than the UI can repaint and rows land in bursts.
+                sleep(0.005)
+        except Exception as e:
+            print(f"[PLAYERS] Resolve worker failed: {e}")
+        finally:
+            self.finished.emit()
+
+    def _resolve_statuses(self):
+        # Prefer a precomputed result from the parallel scan started at refresh time.
+        if self._statuses_event is not None and self._statuses_holder is not None:
+            if self._statuses_event.wait(timeout=2.0):
+                result = self._statuses_holder()
+                if result is not None:
+                    return result
+        return _compute_all_player_statuses()
+
 
 class PlayersWindow(QDialog):
     def __init__(self, parent=None):
@@ -1201,6 +1177,15 @@ class PlayersWindow(QDialog):
             self.game = GameChivalry()
         except Exception as e:
             print(f"[PLAYERS WINDOW] Could not connect to Chivalry 2: {e}")
+
+        # `players` is the resolved roster (name, pid, status); `filtered_players` is
+        # the subset currently shown under the search filter. Both fill incrementally.
+        self.players = []
+        self.filtered_players = []
+        # Pin workers so the daemon thread can keep emitting until they finish.
+        self._active_resolve_workers = []
+        # Bump on each refresh; older workers' entries are ignored after a new one starts.
+        self._resolve_gen = 0
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
@@ -1241,25 +1226,32 @@ class PlayersWindow(QDialog):
         self.player_list.itemClicked.connect(self.open_player_actions)
         self.setLayout(main_layout)
 
-        # Repaint row colours when a fresh discord log scrape lands. The
-        # roster itself comes from an in-game ListPlayers round-trip and
-        # is unrelated to the sanction log, so we only re-render the list
-        # without re-querying the game.
+        # Re-resolve row colours when a scrape lands. The roster itself comes from a
+        # ListPlayers round-trip, so no new game query is needed.
         _get_sanctions_bus().sanctionsUpdated.connect(self._on_sanctions_updated)
 
         if self.game is not None:
             self.refresh_player_list()
 
     def _on_sanctions_updated(self):
-        # Guard: the first scrape can complete before the user has ever
-        # had a player list to colour (no game connection, or roster
-        # request still pending). populate_list iterates filtered_players,
-        # which is only set after a successful clipboard parse.
-        if getattr(self, 'filtered_players', None) is not None:
-            self.populate_list()
+        # Re-resolve against the cached roster so row colours pick up the new sanction state.
+        if self.players:
+            pairs = [(n, p) for (n, p, _s) in self.players]
+            self._start_resolve_worker(pairs=pairs)
 
     def refresh_player_list(self):
         self.awaiting_player_list = True
+
+        # Run the sanction-log scan in parallel with the game's listplayers round-trip,
+        # so statuses are usually ready by the time we parse the clipboard.
+        self._statuses_event  = threading.Event()
+        self._statuses_result = None
+        threading.Thread(
+            target=self._precompute_statuses_bg,
+            name="player-status-precompute",
+            daemon=True,
+        ).start()
+
         try:
             if hasattr(self.game, 'ListPlayers'):
                 self.game.ListPlayers()
@@ -1272,7 +1264,17 @@ class PlayersWindow(QDialog):
             self.awaiting_player_list = False
             return
 
-        QTimer.singleShot(1500, self._parse_player_list_from_clipboard)
+        QTimer.singleShot(100, self._parse_player_list_from_clipboard)
+
+    def _precompute_statuses_bg(self):
+        """Run the sanction-log scan and stash the result for the resolve worker to pick up."""
+        try:
+            self._statuses_result = _compute_all_player_statuses()
+        except Exception as e:
+            print(f"[PLAYERS] Status precompute failed: {e}")
+            self._statuses_result = {}
+        finally:
+            self._statuses_event.set()
 
     def _parse_player_list_from_clipboard(self):
         if not getattr(self, 'awaiting_player_list', False):
@@ -1281,30 +1283,123 @@ class PlayersWindow(QDialog):
             text = pyperclip.paste()
         except Exception:
             text = ""
-        if " - " in (text or ""):
-            self.players = parse_player_list_from_clipboard()
-            self.filtered_players = self.players.copy()
-            self.populate_list()
-            self._update_info_from_text(text)
-            self.awaiting_player_list = False
+        if " - " not in (text or ""):
+            return
+        # Update the server name + player count immediately for instant feedback.
+        self._update_info_from_text(text)
+        self._start_resolve_worker(text=text)
+        self.awaiting_player_list = False
+
+    def _start_resolve_worker(self, text=None, pairs=None):
+        """Start a background resolve. Clears the list and fills it back in as the worker streams entries."""
+        self._resolve_gen += 1
+        gen = self._resolve_gen
+
+        self.players = []
+        self.filtered_players = []
+        self.player_list.clear()
+
+        # The fresh-refresh path hands off the precompute kicked off in refresh_player_list.
+        # The sanctions-update path (pairs supplied) has no precompute, so the worker computes inline.
+        if pairs is None:
+            statuses_event  = getattr(self, '_statuses_event', None)
+            statuses_holder = lambda: getattr(self, '_statuses_result', None)
+        else:
+            statuses_event  = None
+            statuses_holder = None
+
+        worker = _PlayerListResolveWorker(
+            text=text,
+            pairs=pairs,
+            statuses_event=statuses_event,
+            statuses_holder=statuses_holder,
+        )
+        self._active_resolve_workers.append(worker)
+        # Force QueuedConnection: the worker is constructed on the UI thread but runs on a
+        # plain daemon thread, so AutoConnection would pick DirectConnection and touch UI
+        # widgets off-thread. Queued posts each emit to the UI event loop instead.
+        worker.entry.connect(
+            lambda name, pid, status, g=gen: self._on_resolve_entry(name, pid, status, g),
+            Qt.QueuedConnection,
+        )
+        worker.finished.connect(
+            lambda w=worker, g=gen: self._on_resolve_finished(w, g),
+            Qt.QueuedConnection,
+        )
+
+        threading.Thread(
+            target=worker.run,
+            name="player-list-resolve",
+            daemon=True,
+        ).start()
+
+    def _on_resolve_entry(self, name, pid, status, gen):
+        # Drop entries from a worker that was superseded by a newer refresh.
+        if gen != self._resolve_gen:
+            return
+        try:
+            entry = (name, pid, status)
+            self.players.append(entry)
+            term = self.search_bar.text().strip().lower()
+            if term and term not in name.lower() and term not in pid.lower():
+                return
+            self.filtered_players.append(entry)
+            self._append_player_item(name, pid, status)
+        except RuntimeError:
+            # Dialog closed mid-stream — widgets are gone.
+            pass
+
+    def _on_resolve_finished(self, worker, gen):
+        try:
+            self._active_resolve_workers.remove(worker)
+        except ValueError:
+            pass
+        if gen != self._resolve_gen:
+            return
+        # ListPlayers() typed into the game console, leaving Chivalry on top — take focus back.
+        self._bring_to_foreground()
+
+    def _bring_to_foreground(self):
+        """Raise the admin tool above the game.
+
+        raise_() + activateWindow() alone is unreliable when another process owns the
+        foreground (Windows blocks unsolicited focus changes), so we fall back to win32.
+        """
+        try:
+            self.raise_()
+            self.activateWindow()
+            parent = self.parent()
+            if parent is not None:
+                parent.raise_()
+                parent.activateWindow()
+                self.raise_()
+                self.activateWindow()
+        except Exception:
+            pass
+        try:
+            hwnd = int(self.winId())
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception as e:
+            print(f"[FOCUS] Could not reclaim foreground: {e}")
+
+    def _append_player_item(self, name, pid, status):
+        item = QListWidgetItem(f"{name} - {pid}")
+        if status == 'banned':
+            item.setBackground(QBrush(QColor(UI_COLOR_BAN)))
+            item.setForeground(QBrush(QColor('white')))
+        elif status == 'kicked':
+            item.setBackground(QBrush(QColor(UI_COLOR_KICK)))
+            item.setForeground(QBrush(QColor('white')))
+        elif status == 'cautioned':
+            item.setBackground(QBrush(QColor(UI_COLOR_WARN)))
+            item.setForeground(QBrush(QColor('white')))
+        self.player_list.addItem(item)
 
     def populate_list(self):
+        """Re-render the list from `self.filtered_players`. Pure UI — statuses are already attached."""
         self.player_list.clear()
-        white = QBrush(QColor('white'))
-        statuses = _compute_all_player_statuses()
-        for name, pid in self.filtered_players:
-            item = QListWidgetItem(f"{name} - {pid}")
-            status = statuses.get(pid.upper())
-            if status == 'banned':
-                item.setBackground(QBrush(QColor(UI_COLOR_BAN)))
-                item.setForeground(white)
-            elif status == 'kicked':
-                item.setBackground(QBrush(QColor(UI_COLOR_KICK)))
-                item.setForeground(white)
-            elif status == 'cautioned':
-                item.setBackground(QBrush(QColor(UI_COLOR_WARN)))
-                item.setForeground(white)
-            self.player_list.addItem(item)
+        for name, pid, status in self.filtered_players:
+            self._append_player_item(name, pid, status)
 
     def _update_info_from_text(self, text: str):
 
@@ -1338,11 +1433,15 @@ class PlayersWindow(QDialog):
         self.player_count_label.setText(f"Players: {count}")
 
     def filter_players(self, text):
-        text = text.lower()
-        self.filtered_players = [
-            (name, pid) for name, pid in self.players
-            if text in name.lower() or text in pid.lower()
-        ]
+        # Filter the in-memory roster directly — statuses are already attached.
+        term = text.strip().lower()
+        if term:
+            self.filtered_players = [
+                (name, pid, status) for (name, pid, status) in self.players
+                if term in name.lower() or term in pid.lower()
+            ]
+        else:
+            self.filtered_players = list(self.players)
         self.populate_list()
 
     def open_player_actions(self, item):
@@ -1354,7 +1453,7 @@ class PlayersWindow(QDialog):
         dialog.exec_()
 
 class AddTimeDialog(QDialog):
-    """Custom dialog for adding time with improved layout"""
+    """Dialog for adding minutes to the current map."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Add Time")
@@ -1376,7 +1475,7 @@ class AddTimeDialog(QDialog):
         self.time_input = QLineEdit()
         self.time_input.setPlaceholderText("e.g., 5")
         self.time_input.setAlignment(Qt.AlignCenter)
-        self.time_input.setValidator(QIntValidator(1, 9999, self))
+        self.time_input.setValidator(QIntValidator(1, 500, self))
         self.time_input.setMinimumHeight(34)
         main_layout.addWidget(self.time_input)
 
@@ -1401,15 +1500,13 @@ class AddTimeDialog(QDialog):
         self.setLayout(main_layout)
 
     def get_time(self):
-        """Return the entered time value"""
         return self.time_input.text().strip()
 
     def set_time(self, time_value):
-        """Set the time input field value"""
         self.time_input.setText(time_value)
 
 class UnbanPlayerDialog(QDialog):
-    """Custom dialog for unbanning a player with improved layout"""
+    """Dialog for unbanning a player by PlayFabID."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Unban Player")
@@ -1457,7 +1554,6 @@ class UnbanPlayerDialog(QDialog):
         self.setLayout(main_layout)
 
     def get_playfabid(self):
-        """Return the entered PlayFabID, trimmed."""
         return self.playfabid_input.text().strip()
 
 class ConsoleKeyDialog(QDialog):
@@ -1510,33 +1606,24 @@ class ConsoleKeyDialog(QDialog):
 
     def keyPressEvent(self, event):
         try:
-            # Prefer native VK on Windows
             vk = event.nativeVirtualKey() if hasattr(event, 'nativeVirtualKey') else None
         except Exception:
             vk = None
         if vk is None or vk == 0:
-            # Fallback: use Qt key for common ASCII keys
+            # Fall back to the Qt key code for ASCII keys.
             vk = event.key()
         self.captured_vk = int(vk)
         self.status.setText(f"Captured key: VK {self.captured_vk}. Click OK to save or press another key.")
         self.ok_button.setEnabled(True)
 
 class SanctionSearchDialog(QDialog):
-    """Full-history search dialog: filter by Username, PlayFabID, or both.
+    """Full-history sanctions search by Username and/or PlayFabID.
 
-    Two performance affordances tuned for large histories:
-      * Search input is debounced (~200 ms) so each keystroke does not
-        rebuild the card list mid-typing.
-      * Renders at most `_RENDER_CAP_DEFAULT` cards initially; if more
-        results match, a "Show all" footer button lifts the cap. Card
-        construction is by far the slowest part of a refresh, so this
-        bounds worst-case latency regardless of total history size.
+    Tuned for large histories: search is debounced and only the first
+    `_RENDER_CAP_DEFAULT` cards are rendered up front, with a "Show all" button
+    to lift the cap. Card construction dominates refresh latency.
     """
 
-    # Initial render is bounded because each card is a QFrame with a
-    # stylesheet, and Qt's stylesheet pass on first paint dominates open
-    # latency. 50 keeps the scroll feeling populated without freezing
-    # the dialog on first show; "Show all" lifts the cap on demand.
     _RENDER_CAP_DEFAULT = 50
     _SEARCH_DEBOUNCE_MS = 200
 
@@ -1546,7 +1633,6 @@ class SanctionSearchDialog(QDialog):
         self.resize(760, 640)
         self.setModal(True)
 
-        # Load the full history once
         self._all_records = list(reversed(_load_all_sanctions()))  # most-recent first
         self._render_cap  = self._RENDER_CAP_DEFAULT
 
@@ -1555,7 +1641,7 @@ class SanctionSearchDialog(QDialog):
         root.setSpacing(UI_SPACING_INNER)
         self.setLayout(root)
 
-        # ── Search bar + inline count label ───────────────────────────
+        # Search bar + inline count label.
         bar_row = QHBoxLayout()
         bar_row.setSpacing(UI_SPACING_INNER)
 
@@ -1577,12 +1663,10 @@ class SanctionSearchDialog(QDialog):
         self._search_timer.setSingleShot(True)
         self._search_timer.timeout.connect(self._refresh)
 
-        # Reload from the cache when a fresh scrape lands. Records are
-        # cached at dialog open, so without this a new sanction issued
-        # while the search dialog is open wouldn't appear in the list.
+        # Reload from the cache when a scrape lands — otherwise new sanctions issued while
+        # the dialog is open wouldn't appear.
         _get_sanctions_bus().sanctionsUpdated.connect(self._on_sanctions_updated)
 
-        # ── Scroll area ───────────────────────────────────────────────
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1591,17 +1675,13 @@ class SanctionSearchDialog(QDialog):
 
         self._refresh()
 
-    # ── Internal helpers ──────────────────────────────────────────────
-
     def _on_text_changed(self):
-        # Each new query is a fresh view: reset the render cap so we
-        # don't carry "Show all" state from a previous filter.
+        # Reset the render cap so a new query doesn't inherit "Show all" from the previous one.
         self._render_cap = self._RENDER_CAP_DEFAULT
         self._search_timer.start(self._SEARCH_DEBOUNCE_MS)
 
     def _on_sanctions_updated(self):
-        # Re-pull from the cache (it was invalidated by the scrape) and
-        # re-render with the current search term still applied.
+        # Re-pull from the cache (the scrape invalidated it) and re-render with the current filter.
         self._all_records = list(reversed(_load_all_sanctions()))
         self._refresh()
 
@@ -1634,7 +1714,6 @@ class SanctionSearchDialog(QDialog):
                 f"{count} match" + ("" if count == 1 else "es")
             )
 
-        # Rebuild scroll content
         content = QWidget()
         layout  = QVBoxLayout(content)
         layout.setSpacing(6)
@@ -1661,11 +1740,23 @@ class SanctionSearchDialog(QDialog):
         self._scroll.setWidget(content)
 
 
+class _DiscordScrapeWorker(QObject):
+    """Signal bridge for the Discord log scrape running on a daemon thread.
+
+    Created on the UI thread so AutoConnection routes every emit back to UI slots.
+    `finished` is always emitted last so the caller can close the progress dialog.
+    """
+    progress = pyqtSignal(str)         # progress dialog status text
+    error    = pyqtSignal(str, str)    # title, body — fatal; UI closes dialog + critical
+    warning  = pyqtSignal(str, str)    # title, body — non-fatal; UI closes dialog + warning
+    finished = pyqtSignal()            # emitted last; UI closes dialog if still open
+
+
 class AdminDashboard(QWidget):
     def __init__(self):
         super().__init__()
 
-        # Try to connect to Chivalry 2, but don't fail if it's not available
+        # Try to connect to Chivalry 2, but it's OK if it's not running yet.
         self.game = None
         self.chivalry_connected = False
 
@@ -1820,6 +1911,11 @@ class AdminDashboard(QWidget):
         btn_first_to.clicked.connect(self.open_first_to_window)
         arb_layout.addWidget(btn_first_to)
 
+        btn_random_pick = QPushButton("Random Pick")
+        btn_random_pick.setMinimumHeight(34)
+        btn_random_pick.clicked.connect(self.open_random_pick_dialog)
+        arb_layout.addWidget(btn_random_pick)
+
         arb_group.setLayout(arb_layout)
         commands_layout.addWidget(arb_group)
 
@@ -1896,6 +1992,7 @@ class AdminDashboard(QWidget):
         self.add_time_dialog = None
         self.unban_player_dialog = None
         self.console_key_dialog = None
+        self.random_pick_dialog = None
 
     def center_on_screen(self):
         try:
@@ -1914,7 +2011,7 @@ class AdminDashboard(QWidget):
         QTimer.singleShot(0, self.center_on_screen)
 
     def check_game_connection(self):
-        """Check game and server connection status"""
+        """Poll for the Chivalry window and (re)connect or disconnect accordingly."""
         game_window_exists = check_chivalry_window()
 
         if game_window_exists and not self.chivalry_connected:
@@ -2003,7 +2100,6 @@ class AdminDashboard(QWidget):
         self.update_server_preset_tooltips()
 
     def update_connection_status(self):
-        """Update the connection status display"""
         if self.chivalry_connected:
             self.status_label.setText("● Chivalry 2 Connected")
             self.status_label.setStyleSheet(f"color: {UI_STATUS_OK}; font-weight: bold;")
@@ -2012,7 +2108,6 @@ class AdminDashboard(QWidget):
             self.status_label.setStyleSheet(f"color: {UI_STATUS_DANGER}; font-weight: bold;")
 
     def update_webhook_status(self):
-        """Update the webhook status display"""
         status = wehbooks.get_webhook_status()
 
         ok_style = f"color: {UI_STATUS_OK}; font-weight: 600;"
@@ -2080,66 +2175,48 @@ class AdminDashboard(QWidget):
             self.players_window.activateWindow()
 
     def open_add_time_dialog(self):
-        # Check if dialog already exists and is visible
         if self.add_time_dialog is not None and self.add_time_dialog.isVisible():
-            # Dialog already exists, just bring it to front
             self.add_time_dialog.raise_()
             self.add_time_dialog.activateWindow()
             return
 
-        # Create new dialog
         self.add_time_dialog = AddTimeDialog(parent=self)
-        # Pre-fill last add time value
         self.add_time_dialog.set_time(get_persisted_value('last_add_time', ""))
 
-        # Connect accepted signal to handle the action
         def on_accepted():
             added_time = self.add_time_dialog.get_time()
             print(f" +{added_time}min")
 
-            # Try to add time to game if connected
             time_added = False
             if self.chivalry_connected and hasattr(self.game, 'AddTime'):
                 try:
                     self.game.AddTime(added_time)
                     time_added = True
-                    # Delay the success message to avoid stealing focus from game during console operations
-                    QTimer.singleShot(2000, lambda: QMessageBox.information(self, "Time Added", f"Successfully added {added_time} minutes to the game!"))
                 except Exception as e:
                     QMessageBox.warning(self, "Game Error", f"Failed to add time to game:\n{str(e)}")
 
-            # Only send Discord notification if time was actually added to game
             if time_added:
-                # Persist last add time
                 set_persisted_value('last_add_time', str(added_time))
-                #wehbooks.MessageForAdmin("N/A", "N/A", f"Added {added_time} minutes", added_time, "time")
-
         self.add_time_dialog.accepted.connect(on_accepted)
-        # Connect finished signal to clean up reference when dialog is closed
         self.add_time_dialog.finished.connect(lambda: setattr(self, 'add_time_dialog', None))
 
-        # Show non-modal dialog
         self.add_time_dialog.show()
         self.add_time_dialog.raise_()
         self.add_time_dialog.activateWindow()
 
     def open_unban_dialog(self):
-        """Open dialog to unban a player by PlayFabID"""
-        # Check if dialog already exists and is visible
+        """Open the dialog to unban a player by PlayFabID."""
         if self.unban_player_dialog is not None and self.unban_player_dialog.isVisible():
-            # Dialog already exists, just bring it to front
             self.unban_player_dialog.raise_()
             self.unban_player_dialog.activateWindow()
             return
 
-        # Create new dialog
         self.unban_player_dialog = UnbanPlayerDialog(parent=self)
 
-        # Connect accepted signal to handle the action
         def on_accepted():
             player_id = self.unban_player_dialog.get_playfabid()
 
-            # Validate PlayFabID: must be exactly 16 characters, uppercase letters and numbers only
+            # PlayFabIDs are exactly 16 uppercase alphanumeric characters.
             if not player_id or len(player_id) != 16 or not player_id.isupper() or not player_id.isalnum():
                 QMessageBox.warning(
                     self,
@@ -2150,19 +2227,16 @@ class AdminDashboard(QWidget):
 
             print(f"[UNBAN] Player ID={player_id}")
 
-            # Try to execute the unban command if game is connected
             if self.chivalry_connected and hasattr(self.game, 'unbanbyid'):
                 try:
                     self.game.unbanbyid(player_id)
 
-                    # Send ServerSay message to confirm unban
                     if hasattr(self.game, 'ServerSay'):
                         try:
                             self.game.ServerSay(f"{player_id} unban successful.")
                         except Exception as e:
                             print(f"[UNBAN] Could not send ServerSay message: {e}")
 
-                    # Ask user to confirm if the unban was successful by checking the ServerSay message
                     def ask_confirmation():
                         confirm = QMessageBox.question(
                             self,
@@ -2174,7 +2248,7 @@ class AdminDashboard(QWidget):
                         )
 
                         if confirm == QMessageBox.Yes:
-                            # Send Discord webhook notification only if user confirms success
+                            # Only notify Discord once the user confirms the unban actually went through.
                             wehbooks.MessageForAdmin(player_id, "N/A", None, None, "unban")
                             _schedule_silent_discord_scrape(self)
                             QMessageBox.information(
@@ -2190,7 +2264,7 @@ class AdminDashboard(QWidget):
                                 f"Please verify the unban status manually."
                             )
 
-                    # Delay the confirmation dialog to give time for the ServerSay message to appear
+                    # Wait for the ServerSay message to reach the game before asking the user.
                     QTimer.singleShot(2000, ask_confirmation)
 
                 except Exception as e:
@@ -2199,10 +2273,8 @@ class AdminDashboard(QWidget):
                 QMessageBox.warning(self, "Not Connected", "Cannot unban player - Chivalry 2 is not connected.\n\nPlease ensure Chivalry 2 is running.")
 
         self.unban_player_dialog.accepted.connect(on_accepted)
-        # Connect finished signal to clean up reference when dialog is closed
         self.unban_player_dialog.finished.connect(lambda: setattr(self, 'unban_player_dialog', None))
 
-        # Show non-modal dialog
         self.unban_player_dialog.show()
         self.unban_player_dialog.raise_()
         self.unban_player_dialog.activateWindow()
@@ -2215,10 +2287,21 @@ class AdminDashboard(QWidget):
         self.first_to_window = FirstToScoreboardWindow(self)
         self.first_to_window.setAttribute(Qt.WA_DeleteOnClose, True)
         self.first_to_window.finished.connect(lambda: setattr(self, 'first_to_window', None))
-        # Show non-modal dialog
         self.first_to_window.show()
         self.first_to_window.raise_()
         self.first_to_window.activateWindow()
+
+    def open_random_pick_dialog(self):
+        if self.random_pick_dialog is not None and self.random_pick_dialog.isVisible():
+            self.random_pick_dialog.raise_()
+            self.random_pick_dialog.activateWindow()
+            return
+        self.random_pick_dialog = RandomPickDialog(parent=self)
+        self.random_pick_dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.random_pick_dialog.finished.connect(lambda: setattr(self, 'random_pick_dialog', None))
+        self.random_pick_dialog.show()
+        self.random_pick_dialog.raise_()
+        self.random_pick_dialog.activateWindow()
 
     def prompt_wide_text(self, title, label, text):
         dlg = QInputDialog(self)
@@ -2239,13 +2322,12 @@ class AdminDashboard(QWidget):
         return dlg.textValue(), ok == QDialog.Accepted
 
     def configure_discord_webhook(self):
-        """Allow user to reconfigure Discord webhooks"""
+        """Prompt the user for the Discord webhook URLs and persist them."""
         current_primary_url   = get_persisted_value('primary_webhook', '')
         current_secondary_url = get_persisted_value('secondary_webhook', '')
         if current_primary_url   == 'None': current_primary_url   = ''
         if current_secondary_url == 'None': current_secondary_url = ''
 
-        # Prompt for primary webhook URL
         primary_url, ok = self.prompt_wide_text(
             "Primary Discord Webhook Configuration",
             "Enter your primary Discord Webhook URL:\n(Leave empty to disable Discord notifications)",
@@ -2265,7 +2347,7 @@ class AdminDashboard(QWidget):
             )
             return
 
-        # Prompt for secondary webhook URL (only if primary is configured)
+        # Only prompt for a secondary URL if the primary one is set.
         secondary_url = ""
         if primary_url:
             secondary_url, ok2 = self.prompt_wide_text(
@@ -2291,10 +2373,7 @@ class AdminDashboard(QWidget):
             set_persisted_value('primary_webhook',   primary_url   or 'None')
             set_persisted_value('secondary_webhook', secondary_url or 'None')
 
-            # Reinitialize webhooks
             webhook_initialized = wehbooks.initialize_webhook()
-
-            # Update the status display
             self.update_webhook_status()
 
             if primary_url or secondary_url:
@@ -2329,12 +2408,11 @@ class AdminDashboard(QWidget):
             )
 
     def configure_discord_user_id(self):
-        """Allow user to configure Discord User ID"""
+        """Prompt the user for their Discord user ID and persist it."""
         current_discord_user_id = get_persisted_value('discord_user_id', '')
         if current_discord_user_id == 'None':
             current_discord_user_id = ''
 
-        # Prompt for new Discord user ID
         discord_user_id, ok = QInputDialog.getText(
             self,
             "Discord User ID Configuration",
@@ -2373,7 +2451,7 @@ class AdminDashboard(QWidget):
             )
 
     def configure_discord_bot_token(self):
-        """Allow user to set the Discord Bot Token used for channel scraping."""
+        """Prompt for the Discord Bot Token used to scrape the log channel."""
         current_token = get_persisted_value('discord_bot_token', '')
         if current_token == 'None':
             current_token = ''
@@ -2391,7 +2469,7 @@ class AdminDashboard(QWidget):
         set_persisted_value('discord_bot_token', token if token else 'None')
 
     def configure_discord_channel_id(self):
-        """Allow user to set the Discord Channel ID to scrape."""
+        """Prompt for the Discord channel ID to scrape."""
         current_channel = get_persisted_value('discord_channel_id', '')
         if current_channel == 'None':
             current_channel = ''
@@ -2413,59 +2491,31 @@ class AdminDashboard(QWidget):
         set_persisted_value('discord_channel_id', channel_id if channel_id else 'None')
 
     def fetch_discord_channel_messages(self, silent: bool = False):
-        """Fetch all webhook messages from the configured Discord channel and save to discordlogshistory.
+        """Fetch webhook messages from the configured Discord channel into discordlogshistory.
 
-        When `silent=True` the call is treated as a background refresh:
-        missing configuration and errors are swallowed (logged to stdout
-        only) and no progress dialog is shown. Used by the auto-scrape
-        that runs right after an action's webhook is sent — and from
-        startup, where the Discord round-trips would otherwise freeze
-        the dashboard for the duration of pagination + sleeps.
+        Runs on a daemon worker thread. Manual scrapes mount a non-blocking progress dialog
+        driven by worker signals; silent scrapes print to stdout instead.
 
-        The silent path runs on a daemon thread; the manual path
-        (`silent=False`) stays on the main thread because it owns a
-        modal QProgressBar dialog and surfaces errors via QMessageBox.
-        A non-blocking lock dedupes back-to-back silent triggers (e.g.
-        a startup scrape colliding with the post-action follow-up).
+        `silent=True` is used by auto-scrapes (post-action follow-up, startup). A non-blocking
+        lock dedupes back-to-back silent triggers.
         """
         if silent:
             if not _silent_scrape_lock.acquire(blocking=False):
-                # Another silent scrape is already in flight — let it
-                # finish; the next event will retrigger naturally.
+                # Another silent scrape is in flight — the next event will retrigger.
                 return
 
-            def _run():
+        def _release_lock():
+            if silent:
                 try:
-                    self._fetch_discord_channel_messages_impl(silent=True)
-                finally:
                     _silent_scrape_lock.release()
-
-            threading.Thread(
-                target=_run,
-                name="discord-silent-scrape",
-                daemon=True,
-            ).start()
-            return
-
-        self._fetch_discord_channel_messages_impl(silent=False)
-
-    def _fetch_discord_channel_messages_impl(self, silent: bool):
-        """Body of the scrape. Runs on the calling thread.
-
-        For `silent=True` callers, the calling thread is a daemon
-        worker (see `fetch_discord_channel_messages`). Anything that
-        touches Qt widgets in this body is gated on `silent=False`,
-        so the silent path stays Qt-free and thread-safe.
-        """
-        import urllib.request
-        import urllib.error
-        import json
-        import time
+                except RuntimeError:
+                    pass
 
         token = get_persisted_value('discord_bot_token', '')
         channel_id = get_persisted_value('discord_channel_id', '')
 
         if not token or token == 'None':
+            _release_lock()
             if not silent:
                 QMessageBox.warning(
                     self, "Not Configured",
@@ -2476,6 +2526,7 @@ class AdminDashboard(QWidget):
                 print("[SCRAPE] Skipped auto-scrape: bot token not configured")
             return
         if not channel_id or channel_id == 'None':
+            _release_lock()
             if not silent:
                 QMessageBox.warning(
                     self, "Not Configured",
@@ -2486,8 +2537,16 @@ class AdminDashboard(QWidget):
                 print("[SCRAPE] Skipped auto-scrape: channel id not configured")
             return
 
-        progress_dialog = None
-        if not silent:
+        worker = _DiscordScrapeWorker()
+        # Pin the worker to the dashboard so it isn't GC'd mid-emit.
+        self._active_scrape_workers = getattr(self, '_active_scrape_workers', [])
+        self._active_scrape_workers.append(worker)
+
+        if silent:
+            set_text_cb = lambda txt: print(f"[SCRAPE] {txt}")
+            err_cb      = lambda t, b: print(f"[SCRAPE] {t}: {b}")
+            warn_cb     = lambda t, b: print(f"[SCRAPE] {t}: {b}")
+        else:
             progress_dialog = QDialog(self)
             progress_dialog.setWindowTitle("Fetching Messages...")
             progress_dialog.setModal(True)
@@ -2504,34 +2563,76 @@ class AdminDashboard(QWidget):
             progress_dialog.setLayout(pd_layout)
             progress_dialog.resize(420, 120)
             progress_dialog.show()
-            QApplication.processEvents()
 
-        # Thin shims so the rest of the function can update the progress
-        # dialog without branching on `silent` at every call site.
-        def _pd_set_text(txt: str):
-            if progress_dialog is not None:
-                pd_label.setText(txt)
-                QApplication.processEvents()
+            def _close_dialog():
+                try:
+                    progress_dialog.close()
+                except Exception:
+                    pass
 
-        def _pd_close():
-            if progress_dialog is not None:
-                progress_dialog.close()
-
-        def _err(title: str, body: str):
-            if silent:
-                print(f"[SCRAPE] {title}: {body}")
-            else:
+            def _on_error(title, body):
+                _close_dialog()
                 QMessageBox.critical(self, title, body)
 
-        # --- Read the existing log via the in-memory cache -----------------
-        # Hoisted above the pagination loop so we can compare each
-        # incoming Discord message against its cached twin and break
-        # early once we've crossed into already-stored history. The
-        # dicts returned here are the cache's own references — legacy
-        # name enrichment below mutates them in place. The file rewrite
-        # at the end then drops a fresh mtime, and we explicitly
-        # invalidate the cache so the next read picks up the canonical
-        # disk state.
+            def _on_warning(title, body):
+                _close_dialog()
+                QMessageBox.warning(self, title, body)
+
+            worker.progress.connect(pd_label.setText)
+            worker.error.connect(_on_error)
+            worker.warning.connect(_on_warning)
+            worker.finished.connect(_close_dialog)
+
+            set_text_cb = worker.progress.emit
+            err_cb      = worker.error.emit
+            warn_cb     = worker.warning.emit
+
+        def _on_done():
+            try:
+                self._active_scrape_workers.remove(worker)
+            except (ValueError, AttributeError):
+                pass
+        worker.finished.connect(_on_done)
+
+        def _run():
+            try:
+                try:
+                    self._fetch_discord_channel_messages_impl(
+                        token, channel_id, set_text_cb, err_cb, warn_cb
+                    )
+                except Exception as e:
+                    err_cb("Error", f"An unexpected error occurred:\n{str(e)}")
+            finally:
+                worker.finished.emit()
+                _release_lock()
+
+        threading.Thread(
+            target=_run,
+            name=f"discord-scrape-{'silent' if silent else 'manual'}",
+            daemon=True,
+        ).start()
+
+    def _fetch_discord_channel_messages_impl(self, token, channel_id,
+                                              set_text_cb, err_cb, warn_cb):
+        """Body of the scrape. Runs on a daemon worker thread, never touches Qt directly.
+
+        All UI updates flow through the callbacks (worker signals for manual scrapes,
+        stdout for silent ones). The wrapping `fetch_discord_channel_messages` handles
+        config validation and progress-dialog lifecycle.
+        """
+        import urllib.request
+        import urllib.error
+        import json
+        import time
+
+        _pd_set_text = set_text_cb
+        _err = err_cb
+        def _pd_close():
+            pass
+
+        # Read the existing log up front so we can early-stop once incoming messages
+        # match cached records. Dicts here are the cache's own references — legacy name
+        # enrichment below mutates them in place, then we invalidate the cache.
         all_records_view, _, by_id_view, _ = _read_log_cached()
         existing_records = list(all_records_view)
         existing_ids_set = set(by_id_view.keys())
@@ -2541,9 +2642,7 @@ class AdminDashboard(QWidget):
                 continue
             raw_mid = rec.get('ModeratorID', '')
             if raw_mid and not rec.get('ModeratorName', ''):
-                # Pull the numeric id out even if the stored value is still
-                # a raw mention like "<@!123>" or was stored as "!123" by
-                # a previous buggy extractor.
+                # Handles raw mentions like "<@!123>" or buggy "!123" values from older versions.
                 mid = _extract_mention_id(raw_mid)
                 if mid:
                     ids_missing_name.add(mid)
@@ -2556,18 +2655,12 @@ class AdminDashboard(QWidget):
             'User-Agent': 'OVAAdminTool/1.0'
         }
 
-        # Hard cap on retry_after values returned by Discord so a pathological
-        # response can't lock the UI for a long time.
+        # Cap Discord's retry_after so a pathological response can't lock the UI.
         MAX_RETRY_AFTER = 60.0
 
-        # Early-stop: once we've seen this many consecutive incoming
-        # webhook messages whose core fields equal the cached record at
-        # the same id, everything older must already be on disk and
-        # there's no point paginating further. Saves bandwidth and rate-
-        # limit budget on every routine refresh after the first full
-        # backfill. Non-webhook messages are ignored for this counter
-        # (mixed channels of human chat + webhooks would otherwise never
-        # accumulate "consecutive" matches).
+        # Stop paginating once this many consecutive incoming messages already exist on disk.
+        # Non-webhook messages don't reset the counter, so they don't break early-stop in
+        # mixed channels.
         EARLY_STOP_THRESHOLD = 10
         consecutive_matches = 0
         early_stop          = False
@@ -2627,19 +2720,13 @@ class AdminDashboard(QWidget):
                          f"Could not reach Discord:\n{str(getattr(e, 'reason', e))}")
                     return
 
-                # Discord should return a list; an object usually means an
-                # error envelope. Bail out cleanly rather than crashing on
-                # index/iteration.
+                # An object response usually means an error envelope — bail out cleanly.
                 if not isinstance(data, list):
                     break
                 if not data:
                     break
 
-                # Walk the page in API order (newest-first within the
-                # page). Webhook messages get appended to `all_messages`
-                # as before, but we also tally consecutive cached
-                # matches so we can stop the moment we've crossed into
-                # history we already have on disk.
+                # Walk newest-first within the page, tallying cache matches for early-stop.
                 for m in data:
                     if not isinstance(m, dict):
                         continue
@@ -2658,18 +2745,13 @@ class AdminDashboard(QWidget):
                         consecutive_matches = 0
 
                 if early_stop:
-                    if silent:
-                        print(f"[SCRAPE] Early stop: {EARLY_STOP_THRESHOLD} "
-                              f"consecutive cached matches; older history already on disk")
-                    else:
-                        _pd_set_text(
-                            f"Reached cached history ({EARLY_STOP_THRESHOLD} "
-                            f"consecutive matches) — stopping."
-                        )
+                    _pd_set_text(
+                        f"Reached cached history ({EARLY_STOP_THRESHOLD} "
+                        f"consecutive matches) — stopping."
+                    )
                     break
 
-                # Find the last usable id for pagination; skip entries that
-                # lack one instead of crashing with KeyError.
+                # Skip entries without an id rather than crashing on KeyError.
                 last_id = ''
                 for m in reversed(data):
                     if isinstance(m, dict) and m.get('id'):
@@ -2695,9 +2777,7 @@ class AdminDashboard(QWidget):
             _pd_close()
             return
 
-        # Sort oldest first (by snowflake ID, which is chronological).
-        # Fall back to empty string so a message missing an id can't crash
-        # the sort — it will simply float to the top.
+        # Snowflake IDs are chronological. Missing IDs sort to the top instead of crashing.
         all_messages.sort(key=lambda m: str(m.get('id', '')) if isinstance(m, dict) else '')
 
         new_messages = [
@@ -2705,7 +2785,7 @@ class AdminDashboard(QWidget):
             if isinstance(m, dict) and m.get('id') and m.get('id') not in existing_ids_set
         ]
 
-        # --- Collect moderator IDs from new messages -----------------------
+        # Collect moderator IDs that appear in any new message's embeds.
         ids_from_new = set()
         for msg in new_messages:
             embeds = msg.get('embeds') or []
@@ -2726,18 +2806,14 @@ class AdminDashboard(QWidget):
                         if mid:
                             ids_from_new.add(mid)
 
-        # Filter resolution targets down to plausible numeric Discord IDs —
-        # avoids spamming /users/Unknown (or similar) on every scrape.
+        # Only resolve plausible numeric IDs — avoids spamming /users/Unknown.
         ids_to_resolve = {
             mid for mid in (ids_missing_name | ids_from_new)
             if mid and str(mid).isdigit()
         }
 
-        # --- Resolve names via the Discord Users API -----------------------
-        # One call per unique ID per scrape; results are written directly
-        # onto each record, so we never consult a shared name cache on the
-        # read path. IDs that fail to resolve stay ID-only and get retried
-        # on the next scrape.
+        # Resolve names via the Discord Users API. One call per unique ID per scrape;
+        # unresolved IDs stay ID-only and get retried on the next scrape.
         name_by_id = {}
         if ids_to_resolve:
             total = len(ids_to_resolve)
@@ -2775,20 +2851,18 @@ class AdminDashboard(QWidget):
                                 name_by_id[mid] = name
                         except Exception:
                             pass
-                    # 404 / other: silently skip; next scrape can retry
+                    # 404 / other — silently skip, the next scrape can retry.
                 except Exception:
-                    # Network/JSON/etc — skip this id, keep going
                     pass
 
                 _pd_set_text(f"Resolving moderator names ({i}/{total})...")
-                time.sleep(0.1)  # stays well below Discord's global rate limit
+                time.sleep(0.1)  # stay below Discord's global rate limit
 
-        # --- Enrich legacy records in memory -------------------------------
         legacy_changed = False
         if name_by_id:
             for rec in existing_records:
                 if not isinstance(rec, dict):
-                    continue  # malformed line preserved verbatim
+                    continue  # preserve malformed lines verbatim
                 raw_mid = rec.get('ModeratorID', '')
                 if not raw_mid or rec.get('ModeratorName', ''):
                     continue
@@ -2797,7 +2871,6 @@ class AdminDashboard(QWidget):
                     rec['ModeratorName'] = name_by_id[mid]
                     legacy_changed = True
 
-        # --- Append new records --------------------------------------------
         if new_messages:
             try:
                 with open(DISCORD_LOG_FILE, 'a', encoding='utf-8') as f:
@@ -2809,7 +2882,7 @@ class AdminDashboard(QWidget):
                 _err("Save Error", f"Could not write discordlogshistory:\n{str(e)}")
                 return
 
-        # --- Atomically rewrite log if legacy records were enriched --------
+        # Atomically rewrite the log if legacy records were enriched.
         if legacy_changed:
             _pd_set_text("Updating log file...")
             tmp_path = DISCORD_LOG_FILE + '.tmp'
@@ -2820,8 +2893,7 @@ class AdminDashboard(QWidget):
                             f.write(json.dumps(rec, ensure_ascii=False) + '\n')
                         else:
                             f.write(rec + '\n')
-                    # Append any newly-written records too, so the file stays
-                    # consistent with what we just appended above.
+                    # Re-append the new records so the rewrite stays consistent with the append above.
                     for msg in new_messages:
                         f.write(_serialize_discord_message(msg, name_by_id) + '\n')
                 os.replace(tmp_path, DISCORD_LOG_FILE)
@@ -2831,14 +2903,10 @@ class AdminDashboard(QWidget):
                     os.remove(tmp_path)
                 except Exception:
                     pass
-                _pd_close()
-                if silent:
-                    print(f"[SCRAPE] Log rewrite failed: {e}")
-                else:
-                    QMessageBox.warning(self, "Log Rewrite Failed",
-                                        f"Could not rewrite discordlogshistory to enrich "
-                                        f"legacy moderator names:\n{str(e)}\n\n"
-                                        f"New records were still appended successfully.")
+                warn_cb("Log Rewrite Failed",
+                        f"Could not rewrite discordlogshistory to enrich "
+                        f"legacy moderator names:\n{str(e)}\n\n"
+                        f"New records were still appended successfully.")
                 # New records were still appended above — let dialogs refresh.
                 if new_messages:
                     _emit_sanctions_updated()
@@ -2846,84 +2914,66 @@ class AdminDashboard(QWidget):
 
         _pd_close()
 
-        # Notify the UI only when the on-disk log actually changed, so a
-        # no-op scrape (early-stop with nothing new) doesn't churn open
-        # dialogs. Cross-thread safe — see _emit_sanctions_updated.
+        # Only notify the UI if the on-disk log actually changed.
         if new_messages or legacy_changed:
             _emit_sanctions_updated()
 
     def configure_console_key(self):
-        """Prompt user to press the key used to open the in-game console and persist its VK code."""
-        # Check if dialog already exists and is visible
+        """Prompt the user to press their console key and persist its VK code."""
         if self.console_key_dialog is not None and self.console_key_dialog.isVisible():
-            # Dialog already exists, just bring it to front
             self.console_key_dialog.raise_()
             self.console_key_dialog.activateWindow()
             return
 
-        # Load current value if any
         try:
             current_vk = get_persisted_value('console_vk', "")
         except Exception:
             current_vk = ""
 
-        # Create new dialog
         self.console_key_dialog = ConsoleKeyDialog(current_vk=current_vk, parent=self)
 
-        # Connect accepted signal to handle the action
         def on_accepted():
             if self.console_key_dialog.captured_vk is not None:
-                # Save as integer string to localconfig via persisted storage
                 set_persisted_value('console_vk', str(self.console_key_dialog.captured_vk))
-                # Clear the cached console key to force re-detection with new value
+                # Drop the cached value so the next read picks up the new VK.
                 from core import inputLib
                 inputLib.clearConsoleKeyCache()
                 QMessageBox.information(self, "Console Key Saved", f"Console key saved as VK {self.console_key_dialog.captured_vk}.")
 
         self.console_key_dialog.accepted.connect(on_accepted)
-        # Connect finished signal to clean up reference when dialog is closed
         self.console_key_dialog.finished.connect(lambda: setattr(self, 'console_key_dialog', None))
-
-        # Show non-modal dialog
         self.console_key_dialog.show()
         self.console_key_dialog.raise_()
         self.console_key_dialog.activateWindow()
 
     def toggle_theme(self):
-        """Toggle between dark and light theme"""
+        """Toggle between dark and light theme."""
         app = QApplication.instance()
         current_is_dark = load_theme_preference()
         new_is_dark = not current_is_dark
 
-        # Apply new theme
         if new_is_dark:
             apply_dark_theme(app)
         else:
             apply_light_theme(app)
 
-        # Save preference
         save_theme_preference(new_is_dark)
-
-        # Update button text
         self.update_theme_button()
 
-        # Update preset button colors if this is an action dialog
         if hasattr(self, 'update_preset_tooltips'):
             self.update_preset_tooltips()
 
-        # Update colors/tooltips for Admin/Server preset buttons
         if hasattr(self, 'update_admin_preset_tooltips'):
             self.update_admin_preset_tooltips()
         if hasattr(self, 'update_server_preset_tooltips'):
             self.update_server_preset_tooltips()
 
-        # Force refresh of this window's appearance
+        # Force a repaint with the new theme applied.
         self.style().unpolish(self)
         self.style().polish(self)
         self.update()
 
     def update_theme_button(self):
-        """Update theme button text based on current theme"""
         is_dark = load_theme_preference()
         if is_dark:
             self.theme_button.setText("Light Mode")
@@ -2933,12 +2983,10 @@ class AdminDashboard(QWidget):
 class FirstToScoreboardWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Non-modal main dialog
         self.setWindowTitle("Match Arbitration (First To)")
         self.resize(1100, 700)
         self.setSizeGripEnabled(True)
 
-        # State
         self.game = None
         self.chivalry_connected = False
         self.p1_score = 0
@@ -2948,13 +2996,11 @@ class FirstToScoreboardWindow(QDialog):
         main.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
         main.setSpacing(UI_SPACING_SECTION)
 
-        # Title
         ttl = QLabel("Match Arbitration (First To)")
         ttl.setFont(QFont("Segoe UI", 18, QFont.Bold))
         ttl.setAlignment(Qt.AlignCenter)
         main.addWidget(ttl)
 
-        # Match settings
         settings = QGroupBox("Match Settings")
         settings_l = QFormLayout()
         settings_l.setLabelAlignment(Qt.AlignRight)
@@ -2980,7 +3026,6 @@ class FirstToScoreboardWindow(QDialog):
         settings.layout().setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
         main.addWidget(settings)
 
-        # Broadcast
         broadcast = QGroupBox("Broadcast")
         b_l = QVBoxLayout()
         b_l.setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
@@ -3014,7 +3059,6 @@ class FirstToScoreboardWindow(QDialog):
         broadcast.setLayout(b_l)
         main.addWidget(broadcast)
 
-        # Players
         players_grid = QGridLayout()
         players_grid.setColumnStretch(0, 1)
         players_grid.setColumnStretch(1, 1)
@@ -3057,14 +3101,12 @@ class FirstToScoreboardWindow(QDialog):
         players_grid.addWidget(p2_box, 0, 1)
         main.addLayout(players_grid)
 
-        # scoreboard line fills space
         self.scoreboard_label = QLabel()
         self.scoreboard_label.setAlignment(Qt.AlignCenter)
         self.scoreboard_label.setFont(QFont("Segoe UI", 64, QFont.DemiBold))
         self.scoreboard_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         main.addWidget(self.scoreboard_label, 1)
 
-        # bottom actions
         bottom = QHBoxLayout()
         bottom.setSpacing(UI_SPACING_INNER)
         self.reset_score_btn = QPushButton("Reset score")
@@ -3136,7 +3178,6 @@ class FirstToScoreboardWindow(QDialog):
         else:
             self.p2_score = max(0, self.p2_score + delta)
 
-        # Broadcast the current scoreline
         p1 = self.display_name(self.player1_input.text(), "Player 1")
         p2 = self.display_name(self.player2_input.text(), "Player 2")
         self._send_server_message(f"{p1} : {self.p1_score} - {self.p2_score} : {p2}")
@@ -3156,8 +3197,7 @@ class FirstToScoreboardWindow(QDialog):
             winner = 2
         if winner is None:
             return
-        
-        # Announce win if message provided
+
         result = f"{self.display_name(self.player1_input.text(), "")} wins {self.p1_score} to {self.p2_score}"  if winner == 1 else f"{self.display_name(self.player2_input.text(), "")} wins {self.p2_score} to {self.p1_score}"
         
         discord_result = ""
@@ -3170,11 +3210,10 @@ class FirstToScoreboardWindow(QDialog):
         if win_msg:
             self._send_server_message(win_msg)
 
-        # Send Discord notification
         if self.ft_discord_notification.isChecked():
             wehbooks.MessageForAdmin("N/A", "N/A", discord_result, None, "ft")
 
-        # Disable adding further points until reset
+        # Lock the +1 buttons until the user resets the score.
         self.add_p1_btn.setEnabled(False)
         self.add_p2_btn.setEnabled(False)
 
@@ -3186,7 +3225,6 @@ class FirstToScoreboardWindow(QDialog):
         self.update_scoreboard_label()
 
     def reset_board(self):
-        # Clear inputs and reset scores
         self.rounds_input.clear()
         self.player1_input.clear()
         self.player2_input.clear()
@@ -3215,32 +3253,534 @@ class FirstToScoreboardWindow(QDialog):
             pass
         return False
 
+class _CenteredComboBox(QComboBox):
+    """QComboBox that paints the displayed text centered within the field area.
+
+    The default style paints text left-aligned. The popup list is centered via
+    `_CenteredItemDelegate`.
+    """
+
+    def paintEvent(self, _event):
+        painter = QStylePainter(self)
+        opt = QStyleOptionComboBox()
+        self.initStyleOption(opt)
+        # Draw the frame + arrow without the (left-aligned) label.
+        opt.currentText = ""
+        painter.drawComplexControl(QStyle.CC_ComboBox, opt)
+        field_rect = self.style().subControlRect(
+            QStyle.CC_ComboBox, opt, QStyle.SC_ComboBoxEditField, self
+        )
+        painter.drawItemText(
+            field_rect, Qt.AlignCenter, self.palette(),
+            self.isEnabled(), self.currentText()
+        )
+
+
+class _CenteredItemDelegate(QStyledItemDelegate):
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        option.displayAlignment = Qt.AlignCenter
+
+
+class RandomPickDialog(QDialog):
+    """Dialog for randomly picking one weapon and one player from cached lists.
+
+    Weapons carry a 1H/2H attribute and per-row exclude flags; players carry per-row
+    exclude flags. Global filters can restrict the weapon pool to one-handed or
+    two-handed only. The result is announced via ServerSay on demand.
+    """
+
+    HAND_OPTIONS = ("2H", "1H")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Random Pick")
+        self.resize(820, 620)
+        self.setSizeGripEnabled(True)
+
+        self._suspend_persist = True
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
+        main_layout.setSpacing(UI_SPACING_SECTION)
+
+        title_label = QLabel("Random Pick")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        main_layout.addWidget(title_label)
+
+        tables_row = QHBoxLayout()
+        tables_row.setSpacing(UI_SPACING_SECTION)
+        tables_row.addWidget(self._build_weapons_group(), 1)
+        tables_row.addWidget(self._build_players_group(), 1)
+        main_layout.addLayout(tables_row)
+
+        filters_group = QGroupBox("Weapon Filters")
+        filters_layout = QHBoxLayout()
+        filters_layout.setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
+        filters_layout.setSpacing(UI_SPACING_SECTION)
+
+        self.one_handed_only_cb = QCheckBox("One-handed only")
+        self.two_handed_only_cb = QCheckBox("Two-handed only")
+        self.one_handed_only_cb.toggled.connect(self._on_one_handed_toggled)
+        self.two_handed_only_cb.toggled.connect(self._on_two_handed_toggled)
+
+        filters_layout.addWidget(self.one_handed_only_cb)
+        filters_layout.addWidget(self.two_handed_only_cb)
+        filters_layout.addStretch(1)
+        filters_group.setLayout(filters_layout)
+        main_layout.addWidget(filters_group)
+
+        self.result_label = QLabel("No pick yet.")
+        self.result_label.setAlignment(Qt.AlignCenter)
+        self.result_label.setWordWrap(True)
+        self.result_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        self.result_label.setMinimumHeight(48)
+        main_layout.addWidget(self.result_label)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(UI_SPACING_INNER)
+
+        self.pick_button = QPushButton("Assign weapon (1 Player)")
+        self.pick_button.setMinimumHeight(38)
+        self.pick_button.setStyleSheet(_colored_button_qss(UI_ACCENT))
+        self.pick_button.clicked.connect(self._do_pick_single)
+
+        self.pick_pair_button = QPushButton("Assign weapons (2 Players)")
+        self.pick_pair_button.setMinimumHeight(38)
+        self.pick_pair_button.setStyleSheet(_colored_button_qss(UI_COLOR_INFO))
+        self.pick_pair_button.clicked.connect(self._do_pick_pair)
+
+        self.close_button = QPushButton("Close")
+        self.close_button.setMinimumHeight(38)
+        self.close_button.clicked.connect(self.accept)
+
+        for btn in (self.pick_button, self.pick_pair_button, self.close_button):
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        action_row.addWidget(self.pick_button, 1)
+        action_row.addWidget(self.pick_pair_button, 1)
+        action_row.addWidget(self.close_button, 1)
+        main_layout.addLayout(action_row)
+
+        self._load_persisted_state()
+        self._suspend_persist = False
+
+        self._apply_table_selection_theme(load_theme_preference())
+        _theme_bus.theme_changed.connect(self._apply_table_selection_theme)
+        self.finished.connect(self._disconnect_theme_bus)
+
+    def _apply_table_selection_theme(self, is_dark: bool):
+        if is_dark:
+            sel_bg = "#454545"
+            sel_fg = "#ececec"
+        else:
+            sel_bg = "#e3e8f0"
+            sel_fg = "#2c2f33"
+        qss = (
+            "QTableWidget::item:selected {"
+            f" background-color: {sel_bg}; color: {sel_fg};"
+            "}"
+            "QTableWidget::item:selected:!active {"
+            f" background-color: {sel_bg}; color: {sel_fg};"
+            "}"
+        )
+        if hasattr(self, "weapons_table"):
+            self.weapons_table.setStyleSheet(qss)
+        if hasattr(self, "players_table"):
+            self.players_table.setStyleSheet(qss)
+
+    def _disconnect_theme_bus(self):
+        try:
+            _theme_bus.theme_changed.disconnect(self._apply_table_selection_theme)
+        except Exception:
+            pass
+
+    # ---- table builders ----
+
+    def _build_weapons_group(self) -> QGroupBox:
+        group = QGroupBox("Weapons")
+        v = QVBoxLayout()
+        v.setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
+        v.setSpacing(UI_PAD_INNER)
+
+        self.weapons_table = QTableWidget(0, 3)
+        self.weapons_table.setHorizontalHeaderLabels(["Weapon Name", "Hand", "Exclude"])
+        self.weapons_table.verticalHeader().setVisible(False)
+        self.weapons_table.verticalHeader().setDefaultSectionSize(44)
+        self.weapons_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.weapons_table.setEditTriggers(
+            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed
+        )
+        header = self.weapons_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        self.weapons_table.setColumnWidth(1, 80)
+        self.weapons_table.setColumnWidth(2, 70)
+        self.weapons_table.itemChanged.connect(self._on_weapon_item_changed)
+        v.addWidget(self.weapons_table, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(UI_PAD_TIGHT)
+        add_btn = QPushButton("Add Weapon")
+        add_btn.clicked.connect(lambda: self._add_weapon_row("", "1H", False, focus=True))
+        remove_btn = QPushButton("Remove Selected")
+        remove_btn.clicked.connect(lambda: self._remove_selected_rows(self.weapons_table))
+        btn_row.addWidget(add_btn)
+        btn_row.addWidget(remove_btn)
+        btn_row.addStretch(1)
+        v.addLayout(btn_row)
+
+        group.setLayout(v)
+        return group
+
+    def _build_players_group(self) -> QGroupBox:
+        group = QGroupBox("Players")
+        v = QVBoxLayout()
+        v.setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
+        v.setSpacing(UI_PAD_INNER)
+
+        self.players_table = QTableWidget(0, 2)
+        self.players_table.setHorizontalHeaderLabels(["Username", "Exclude"])
+        self.players_table.verticalHeader().setVisible(False)
+        self.players_table.verticalHeader().setDefaultSectionSize(44)
+        self.players_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.players_table.setEditTriggers(
+            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed
+        )
+        header = self.players_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Fixed)
+        self.players_table.setColumnWidth(1, 70)
+        self.players_table.itemChanged.connect(self._on_player_item_changed)
+        v.addWidget(self.players_table, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(UI_PAD_TIGHT)
+        add_btn = QPushButton("Add Player")
+        add_btn.clicked.connect(lambda: self._add_player_row("", False, focus=True))
+        remove_btn = QPushButton("Remove Selected")
+        remove_btn.clicked.connect(lambda: self._remove_selected_rows(self.players_table))
+        btn_row.addWidget(add_btn)
+        btn_row.addWidget(remove_btn)
+        btn_row.addStretch(1)
+        v.addLayout(btn_row)
+
+        group.setLayout(v)
+        return group
+
+    # ---- row management ----
+
+    def _add_weapon_row(self, name: str, hand: str, exclude: bool, focus: bool = False):
+        table = self.weapons_table
+        row = table.rowCount()
+        table.insertRow(row)
+
+        name_item = QTableWidgetItem(name)
+        table.setItem(row, 0, name_item)
+
+        combo = _CenteredComboBox()
+        combo.addItems(self.HAND_OPTIONS)
+        combo.setCurrentText(hand if hand in self.HAND_OPTIONS else "2H")
+        combo.setMinimumWidth(40)
+        combo.setItemDelegate(_CenteredItemDelegate(combo))
+        combo.view().setTextElideMode(Qt.ElideNone)
+        combo.currentTextChanged.connect(lambda _t: self._persist_weapons())
+
+        combo_wrapper = QWidget()
+        cw_layout = QHBoxLayout(combo_wrapper)
+        cw_layout.setContentsMargins(UI_PAD_TIGHT, 2, UI_PAD_TIGHT, 2)
+        cw_layout.addWidget(combo)
+        table.setCellWidget(row, 1, combo_wrapper)
+
+        cb_widget, cb = self._make_centered_checkbox(exclude)
+        cb.toggled.connect(lambda _v: self._persist_weapons())
+        table.setCellWidget(row, 2, cb_widget)
+
+        if focus:
+            table.editItem(name_item)
+
+    def _add_player_row(self, name: str, exclude: bool, focus: bool = False):
+        table = self.players_table
+        row = table.rowCount()
+        table.insertRow(row)
+
+        name_item = QTableWidgetItem(name)
+        table.setItem(row, 0, name_item)
+
+        cb_widget, cb = self._make_centered_checkbox(exclude)
+        cb.toggled.connect(lambda _v: self._persist_players())
+        table.setCellWidget(row, 1, cb_widget)
+
+        if focus:
+            table.editItem(name_item)
+
+    def _remove_selected_rows(self, table: QTableWidget):
+        rows = sorted({idx.row() for idx in table.selectionModel().selectedRows()}, reverse=True)
+        if not rows:
+            return
+        for r in rows:
+            table.removeRow(r)
+        if table is self.weapons_table:
+            self._persist_weapons()
+        else:
+            self._persist_players()
+
+    @staticmethod
+    def _make_centered_checkbox(checked: bool):
+        wrapper = QWidget()
+        layout = QHBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.setAlignment(Qt.AlignCenter)
+        cb = QCheckBox()
+        cb.setChecked(checked)
+        cb.setStyleSheet("QCheckBox { spacing: 0px; margin: 0px; padding: 2px; } QCheckBox::indicator { width: 16px; height: 16px; }")
+        cb.setFixedSize(20, 20)
+        layout.addWidget(cb)
+        return wrapper, cb
+
+    def _checkbox_at(self, table: QTableWidget, row: int, col: int) -> QCheckBox:
+        wrapper = table.cellWidget(row, col)
+        if wrapper is None:
+            return None
+        return wrapper.findChild(QCheckBox)
+
+    # ---- filter handling ----
+
+    def _on_one_handed_toggled(self, checked: bool):
+        if checked and self.two_handed_only_cb.isChecked():
+            self.two_handed_only_cb.blockSignals(True)
+            self.two_handed_only_cb.setChecked(False)
+            self.two_handed_only_cb.blockSignals(False)
+        self._persist_filters()
+
+    def _on_two_handed_toggled(self, checked: bool):
+        if checked and self.one_handed_only_cb.isChecked():
+            self.one_handed_only_cb.blockSignals(True)
+            self.one_handed_only_cb.setChecked(False)
+            self.one_handed_only_cb.blockSignals(False)
+        self._persist_filters()
+
+    # ---- change handlers ----
+
+    def _on_weapon_item_changed(self, _item):
+        if self._suspend_persist:
+            return
+        self._persist_weapons()
+
+    def _on_player_item_changed(self, _item):
+        if self._suspend_persist:
+            return
+        self._persist_players()
+
+    # ---- pick logic ----
+
+    def _collect_weapons(self) -> list:
+        out = []
+        for row in range(self.weapons_table.rowCount()):
+            name_item = self.weapons_table.item(row, 0)
+            name = name_item.text().strip() if name_item else ""
+            wrapper = self.weapons_table.cellWidget(row, 1)
+            combo = wrapper.findChild(QComboBox) if wrapper is not None else None
+            hand = combo.currentText() if combo is not None else "1H"
+            cb = self._checkbox_at(self.weapons_table, row, 2)
+            exclude = cb.isChecked() if cb is not None else False
+            out.append({"name": name, "hand": hand, "exclude": exclude})
+        return out
+
+    def _collect_players(self) -> list:
+        out = []
+        for row in range(self.players_table.rowCount()):
+            name_item = self.players_table.item(row, 0)
+            name = name_item.text().strip() if name_item else ""
+            cb = self._checkbox_at(self.players_table, row, 1)
+            exclude = cb.isChecked() if cb is not None else False
+            out.append({"name": name, "exclude": exclude})
+        return out
+
+    def _selected_player(self) -> dict:
+        selected_rows = self.players_table.selectionModel().selectedRows()
+        if not selected_rows:
+            return None
+        row = selected_rows[0].row()
+        name_item = self.players_table.item(row, 0)
+        name = name_item.text().strip() if name_item else ""
+        if not name:
+            return None
+        return {"name": name, "exclude": False}
+
+    def _eligible_weapons(self) -> list:
+        one_only = self.one_handed_only_cb.isChecked()
+        two_only = self.two_handed_only_cb.isChecked()
+        out = []
+        for w in self._collect_weapons():
+            if not w["name"] or w["exclude"]:
+                continue
+            if one_only and w["hand"] != "1H":
+                continue
+            if two_only and w["hand"] != "2H":
+                continue
+            out.append(w)
+        return out
+
+    def _eligible_players(self) -> list:
+        return [p for p in self._collect_players() if p["name"] and not p["exclude"]]
+
+    def _do_pick_single(self):
+        weapons = self._eligible_weapons()
+        if not weapons:
+            QMessageBox.warning(self, "No Weapons", "No eligible weapons available with current filters/exclusions.")
+            return
+
+        player = self._selected_player()
+        if player is None:
+            players = self._eligible_players()
+            if not players:
+                QMessageBox.warning(self, "No Players", "No eligible players available with current exclusions.")
+                return
+            player = random.choice(players)
+
+        weapon = random.choice(weapons)
+        message = f"{player['name']} got assigned to {weapon['name']} !"
+
+        self.result_label.setText(message)
+        self._send_serversay([message])
+
+    def _do_pick_pair(self):
+        weapons = self._eligible_weapons()
+        players = self._eligible_players()
+
+        if len(players) < 2:
+            QMessageBox.warning(
+                self, "Not Enough Players",
+                "Need at least 2 eligible players to pick a pair."
+            )
+            return
+        if len(weapons) < 2:
+            QMessageBox.warning(
+                self, "Not Enough Weapons",
+                "Need at least 2 eligible weapons (with current filters/exclusions) to pick a pair."
+            )
+            return
+
+        chosen_players = random.sample(players, 2)
+        chosen_weapons = random.sample(weapons, 2)
+
+        messages = [
+            f"{chosen_players[i]['name']} got assigned to {chosen_weapons[i]['name']} !"
+            for i in range(2)
+        ]
+
+        self.result_label.setText(" | ".join(messages))
+        self._send_serversay(messages)
+
+    def _send_serversay(self, messages: list):
+        parent = self.parent()
+        game = getattr(parent, 'game', None)
+        connected = bool(getattr(parent, 'chivalry_connected', False))
+
+        if not connected or game is None or not hasattr(game, 'ServerSay'):
+            QMessageBox.warning(
+                self,
+                "Not Connected",
+                "Result picked, but cannot announce - Chivalry 2 is not connected.\n\nPlease ensure Chivalry 2 is running."
+            )
+            return
+
+        for msg in messages:
+            try:
+                game.ServerSay(msg)
+            except Exception as e:
+                QMessageBox.warning(self, "Game Error", f"Failed to send message to game:\n{str(e)}")
+                return
+
+    # ---- persistence ----
+
+    def _persist_weapons(self):
+        if self._suspend_persist:
+            return
+        try:
+            set_persisted_value('random_pick_weapons', json.dumps(self._collect_weapons(), ensure_ascii=False))
+        except Exception:
+            pass
+
+    def _persist_players(self):
+        if self._suspend_persist:
+            return
+        try:
+            set_persisted_value('random_pick_players', json.dumps(self._collect_players(), ensure_ascii=False))
+        except Exception:
+            pass
+
+    def _persist_filters(self):
+        if self._suspend_persist:
+            return
+        payload = {
+            "one_handed_only": self.one_handed_only_cb.isChecked(),
+            "two_handed_only": self.two_handed_only_cb.isChecked(),
+        }
+        try:
+            set_persisted_value('random_pick_filters', json.dumps(payload))
+        except Exception:
+            pass
+
+    def _load_persisted_state(self):
+        try:
+            weapons_raw = get_persisted_value('random_pick_weapons', '')
+            weapons = json.loads(weapons_raw) if weapons_raw else []
+        except Exception:
+            weapons = []
+        for w in weapons:
+            if isinstance(w, dict):
+                self._add_weapon_row(
+                    str(w.get("name", "")),
+                    str(w.get("hand", "1H")),
+                    bool(w.get("exclude", False)),
+                )
+
+        try:
+            players_raw = get_persisted_value('random_pick_players', '')
+            players = json.loads(players_raw) if players_raw else []
+        except Exception:
+            players = []
+        for p in players:
+            if isinstance(p, dict):
+                self._add_player_row(
+                    str(p.get("name", "")),
+                    bool(p.get("exclude", False)),
+                )
+
+        try:
+            filters_raw = get_persisted_value('random_pick_filters', '')
+            filters = json.loads(filters_raw) if filters_raw else {}
+        except Exception:
+            filters = {}
+        if isinstance(filters, dict):
+            self.one_handed_only_cb.blockSignals(True)
+            self.two_handed_only_cb.blockSignals(True)
+            self.one_handed_only_cb.setChecked(bool(filters.get("one_handed_only", False)))
+            self.two_handed_only_cb.setChecked(bool(filters.get("two_handed_only", False)))
+            self.one_handed_only_cb.blockSignals(False)
+            self.two_handed_only_cb.blockSignals(False)
+
+
 # ---- Discord log history (JSON Lines database) ----
 
 DISCORD_LOG_FILE = "discordlogshistory"
 
-# Module-level cache of parsed discordlogshistory.
-# Invalidated by (mtime, size); every helper that reads sanctions goes
-# through `_read_log_cached()` so the file is parsed at most once per
-# external mutation. Index views (`by_id`, `by_pid`) hold the same dict
-# references as `dicts`, not copies.
-#
-# Thread safety: the parse can run on a background warmup thread (see
-# `_warm_log_cache_async`) while UI-thread callers also hit the cache.
-# `_log_cache_lock` serializes parses; readers either get a cache hit
-# (lock-free fast path after the first load completes) or briefly block
-# on an in-progress parse instead of duplicating it on the UI thread.
+# Module-level cache of the parsed log. Invalidated by (mtime, size). Every sanction reader
+# goes through `_read_log_cached()` so the file is parsed at most once per external mutation.
+# Index views (`by_id`, `by_pid`) share dict references with `dicts` — they are not copies.
+# Parsing is serialized by `_log_cache_lock`; the cache-hit fast path is lock-free.
 _log_cache_lock     = threading.Lock()
-# Held by an in-flight silent scrape; non-blocking acquire lets repeat
-# triggers (startup + per-action follow-ups) coalesce into a single run.
+# Held by an in-flight silent scrape so repeat triggers coalesce into one run.
 _silent_scrape_lock = threading.Lock()
 
 
 class _SanctionsBus(QObject):
-    """Signal hub: dialogs subscribe here to learn that the discord log
-    file has changed (new sanction records appended or legacy records
-    rewritten) so they can re-pull from `_load_*_sanctions` and rebuild.
-    """
+    """Signal hub for log-changed notifications so dialogs can re-pull and rebuild."""
     sanctionsUpdated = pyqtSignal()
 
 
@@ -3248,11 +3788,10 @@ _sanctions_bus = None
 
 
 def _get_sanctions_bus() -> _SanctionsBus:
-    """Return the global sanctions bus, creating it lazily on first use.
+    """Return the global sanctions bus, creating it on first use.
 
-    Must be called from the UI thread the first time so the QObject is
-    affined to it; subscribers (dialogs) all live on the UI thread, and
-    cross-thread emits from the silent-scrape worker queue automatically.
+    Must be called from the UI thread the first time so the QObject is affined there;
+    cross-thread emits from worker threads then queue back to the UI thread automatically.
     """
     global _sanctions_bus
     if _sanctions_bus is None:
@@ -3261,15 +3800,7 @@ def _get_sanctions_bus() -> _SanctionsBus:
 
 
 def _emit_sanctions_updated() -> None:
-    """Notify subscribed dialogs that the sanctions log has changed.
-
-    Safe to call from any thread: PyQt converts the AutoConnection into a
-    QueuedConnection when the emit thread differs from the receiver's
-    thread, so each subscriber's slot runs back on the UI thread.
-
-    No-op when nobody has touched the bus yet (no dialogs ever opened) —
-    avoids creating the QObject from a worker thread.
-    """
+    """Notify subscribers that the sanctions log changed. Thread-safe; no-op if no bus exists yet."""
     bus = _sanctions_bus
     if bus is not None:
         bus.sanctionsUpdated.emit()
@@ -3284,12 +3815,8 @@ _log_warm_thread    = None   # daemon Thread currently warming the cache, or Non
 def _read_log_cached():
     """Return (records, dicts, by_id, by_pid) for discordlogshistory.
 
-    Re-parses from disk only when (mtime, size) has changed since the
-    previous load. Returned containers are the cache itself — callers
-    must treat them as read-only.
-
-    Thread-safe: a background warmup thread and the UI thread can both
-    call this; the lock ensures the file is parsed at most once.
+    Re-parses from disk only when (mtime, size) changes. Returned containers are the
+    cache itself — treat them as read-only. Thread-safe.
     """
     global _log_cache_key, _log_cache_records, _log_cache_dicts
     global _log_cache_by_id, _log_cache_by_pid
@@ -3331,8 +3858,7 @@ def _read_log_cached():
                     if not isinstance(rec, dict):
                         records.append(line)
                         continue
-                    # Intern keys so all records share one copy of each key
-                    # string instead of allocating fresh ones per line.
+                    # Intern keys so all records share one copy of each key string.
                     rec = {sys.intern(k) if isinstance(k, str) else k: v for k, v in rec.items()}
                     records.append(rec)
                     dicts.append(rec)
@@ -3343,7 +3869,7 @@ def _read_log_cached():
                     if pid:
                         by_pid.setdefault(pid.upper(), []).append(rec)
         except Exception:
-            # Leave the previous cache in place on transient read failure.
+            # Keep the previous cache on transient read failure.
             return _log_cache_records, _log_cache_dicts, _log_cache_by_id, _log_cache_by_pid
 
         _log_cache_key     = key
@@ -3357,9 +3883,7 @@ def _read_log_cached():
 def _invalidate_log_cache() -> None:
     """Force the next _read_log_cached() call to re-parse from disk.
 
-    Called after the scrape appends or rewrites the log file — the
-    write itself updates mtime, but invalidating explicitly avoids
-    relying on filesystem timestamp resolution.
+    Called after we mutate the log ourselves so we don't depend on filesystem timestamp resolution.
     """
     global _log_cache_key
     with _log_cache_lock:
@@ -3367,16 +3891,7 @@ def _invalidate_log_cache() -> None:
 
 
 def _warm_log_cache_async() -> None:
-    """Warm the discord log cache on a daemon thread, off the UI thread.
-
-    Idempotent: if a warmup is already in flight, returns immediately.
-    The thread parses into the same cache UI-thread callers consult, so
-    by the time the user opens the dashboard the first cache hit is
-    near-free even with a multi-thousand-record history.
-
-    Safe to call before/during/after the waiting dialog. Daemon flag
-    means it cannot block app shutdown.
-    """
+    """Warm the discord log cache on a daemon thread. Idempotent — re-entry while in flight is a no-op."""
     global _log_warm_thread
     t = _log_warm_thread
     if t is not None and t.is_alive():
@@ -3386,8 +3901,7 @@ def _warm_log_cache_async() -> None:
         try:
             _read_log_cached()
         except Exception as e:
-            # Never let a warmup crash propagate — the UI fallbacks
-            # (synchronous read on first access) still work.
+            # Don't let a warmup crash propagate — the synchronous fallback on first access still works.
             print(f"[CACHE] Warmup failed: {e}")
 
     t = threading.Thread(target=_run, name="discord-log-cache-warmup", daemon=True)
@@ -3396,13 +3910,10 @@ def _warm_log_cache_async() -> None:
 
 
 def _schedule_silent_discord_scrape(origin_widget, delay_ms: int = 2000) -> None:
-    """Fire a silent log scrape shortly after a webhook-triggered action.
+    """Fire a silent log scrape after a webhook-triggered action.
 
-    Webhook delivery is usually sub-second but not instant, so we delay a
-    bit before scraping to let the just-sent message land in the target
-    channel. If no AdminDashboard is reachable from `origin_widget` (or
-    anywhere in the app), the call is a silent no-op — the manual
-    "Fetch Discord Channel Messages" button remains the fallback.
+    Delayed so the webhook has time to actually land in Discord before we scrape. No-op if no
+    AdminDashboard is reachable — the manual "Fetch Discord Channel Messages" button is the fallback.
     """
     dashboard = None
     w = origin_widget
@@ -3435,10 +3946,9 @@ _MD_STRIP_RE = re.compile(r'^[\*_]+|[\*_]+$')
 
 
 def _extract_mention_id(raw) -> str:
-    """Return the numeric user id from a mention string, or '' if none.
+    """Return the numeric user id from a Discord mention, or '' if none found.
 
-    Accepts <@id>, <@!id>, <@&id>, or a bare numeric id. Anything else
-    (including 'Unknown', empty, None) yields ''.
+    Accepts <@id>, <@!id>, <@&id>, or a bare numeric id. Anything else (including 'Unknown', empty, None) yields ''.
     """
     if not raw:
         return ''
@@ -3446,19 +3956,15 @@ def _extract_mention_id(raw) -> str:
     m = _MENTION_ID_RE.search(s)
     if m:
         return m.group(1)
-    # Bare digits fallback (handles stored records that kept the raw id).
     if s.isdigit():
         return s
     m = _DIGITS_RE.search(s)
     return m.group(0) if m else ''
 
 
-# Core fields used to decide whether a freshly-fetched Discord message
-# is the "same record" as the one we already have on disk. Excludes
-# `ModeratorName`: that field is filled in by a separate /users/{id}
-# round-trip, so a cached record may have it while a freshly-extracted
-# one (no `name_by_id`) won't — comparing it would cause spurious
-# mismatches and defeat the early-stop optimisation.
+# Fields used to decide whether a fresh Discord message matches a cached record.
+# `ModeratorName` is excluded because it's filled in by a separate /users/{id} call,
+# so a cached record may have it while a fresh one (without `name_by_id`) won't.
 _SCRAPE_DUP_FIELDS = (
     'id', 'timestamp', 'action', 'PlayFabID', 'Username',
     'Reason', 'Duration', 'ModeratorID',
@@ -3466,12 +3972,10 @@ _SCRAPE_DUP_FIELDS = (
 
 
 def _scrape_record_matches(msg: dict, cached: dict) -> bool:
-    """Whether a freshly-fetched Discord message would produce the same
-    sanction record as one already on disk (cached).
+    """Whether a fresh Discord message would yield the same record as one already cached.
 
-    Used by the scrape pagination loop to detect the boundary between
-    new history and already-stored history without serializing through
-    JSON.
+    Used by the scrape's early-stop check to find the boundary between new and stored history
+    without going through JSON.
     """
     if not isinstance(cached, dict):
         return False
@@ -3485,17 +3989,16 @@ def _scrape_record_matches(msg: dict, cached: dict) -> bool:
 def _discord_message_to_record(msg: dict, name_by_id: dict = None) -> dict:
     """Extract the flat sanction record from a Discord webhook message.
 
-    See `_serialize_discord_message` for the field reference and parsing
-    rules. Split out so callers that need to *compare* messages (the
-    scrape's early-stop check) can avoid a JSON round-trip.
+    See `_serialize_discord_message` for the field reference. Split out so the scrape's
+    early-stop check can compare messages without a JSON round-trip.
     """
     _ACTION_MAP = [
-        ('unban',    'unban'),     # check before 'ban' so 'unban' doesn't match 'ban'
+        ('unban',    'unban'),     # must come before 'ban' so it doesn't match the substring
         ('ban',      'ban'),
         ('kick',     'kick'),
         ('note',     'note'),
-        ('warning',  'note'),      # legacy: pre-rename embeds said "warning"
-        ('warn',     'note'),      # legacy: pre-rename embeds said "warn"
+        ('warning',  'note'),      # legacy embeds said "warning"
+        ('warn',     'note'),      # legacy embeds said "warn"
         ('first to', 'ft'),
     ]
 
@@ -3533,7 +4036,7 @@ def _discord_message_to_record(msg: dict, name_by_id: dict = None) -> dict:
                 key, _, val = line.partition(':')
                 key = _MD_STRIP_RE.sub('', key.strip()).strip().lower()
                 val = val.strip().strip('`').strip()
-                # Strip wrapping markdown the field may carry (e.g. "** ABC **")
+                # Strip surrounding markdown like "** ABC **".
                 val = _MD_STRIP_RE.sub('', val).strip()
                 if not key:
                     continue
@@ -3550,12 +4053,10 @@ def _discord_message_to_record(msg: dict, name_by_id: dict = None) -> dict:
             if not isinstance(emb, dict):
                 continue
 
-            # Derive action from embed description. Falls back to scanning
-            # title if description is empty.
+            # Derive action from the embed description, falling back to the title.
             desc = (emb.get('description') or '') + ' ' + (emb.get('title') or '')
             if desc.strip() and not record['action']:
-                # Prefer bold-delimited tokens, but also scan the raw
-                # description if no bold is present.
+                # Prefer bold-delimited tokens; fall back to scanning the raw text.
                 bold_tokens = [m.group(1).lower() for m in _BOLD_RE.finditer(desc)]
                 scan_sources = bold_tokens + [desc.lower()]
                 for source in scan_sources:
@@ -3589,42 +4090,30 @@ def _discord_message_to_record(msg: dict, name_by_id: dict = None) -> dict:
                         if name_by_id and mid in name_by_id:
                             record['ModeratorName'] = name_by_id[mid]
                 else:
-                    # Fallback: field name differs from what we expect but
-                    # the value still looks like key/value pairs.
+                    # Field name was unexpected but the value still looks like key/value pairs.
                     if ':' in str(fvalue) and any(
                         k in str(fvalue).lower()
                         for k in ('playfabid', 'username', 'reason', 'duration')
                     ):
                         _parse_info_value(fvalue)
     except Exception:
-        # Never let a single weird message break the whole scrape.
+        # One malformed message shouldn't break the whole scrape.
         pass
 
     return record
 
 
 def _serialize_discord_message(msg: dict, name_by_id: dict = None) -> str:
-    """Serialize a single Discord webhook message to a flat JSON line.
+    """Serialize a Discord webhook message into one flat JSON line.
 
-    Stored fields: id, timestamp, action, PlayFabID, Username, Reason,
-                   Duration, ModeratorID, ModeratorName
+    Stored fields: id, timestamp, action, PlayFabID, Username, Reason, Duration, ModeratorID, ModeratorName.
 
-    Action is extracted from the bold word(s) in the embed description:
-      "A **ban** has been executed"     -> ban
-      "An **unban** has been executed"  -> unban
-      "A **kick** has been executed"    -> kick
-      "A **note** has been added"       -> note
-      "A **warning** has been issued"   -> note  (legacy)
-      "A **First To** match ..."        -> ft
+    Action is parsed from the bold token in the embed description ("**ban**", "**unban**", ...).
+    If `name_by_id` contains the extracted moderator id, `ModeratorName` is baked in so the read path
+    never needs a separate cache.
 
-    If `name_by_id` is provided and contains the extracted moderator ID,
-    the corresponding display name is baked into the record as
-    `ModeratorName` so the read path never needs a separate cache.
-
-    Intentionally tolerant of minor format drift: field names are matched
-    case-insensitively, bold markers may be ** or __, and key/value lines
-    may have surrounding markdown. Any unexpected structure falls through
-    and produces a record with empty fields rather than raising.
+    Tolerant of minor format drift: case-insensitive field names, ** or __ bold markers, surrounding
+    markdown on key/value lines. Unexpected structure yields empty fields rather than raising.
     """
     return json.dumps(_discord_message_to_record(msg, name_by_id), ensure_ascii=False)
 
@@ -3666,6 +4155,9 @@ def write_localconfig_lines(lines):
 # 26: console virtual key code
 # 27: discord bot token (for channel scraping)
 # 28: discord channel id (for channel scraping)
+# 29: random pick weapons (JSON)
+# 30: random pick players (JSON)
+# 31: random pick filters (JSON)
 PERSIST_INDEX = {
     'primary_webhook':   0,
     'secondary_webhook': 1,
@@ -3680,6 +4172,9 @@ PERSIST_INDEX = {
     'console_vk':        26,
     'discord_bot_token': 27,
     'discord_channel_id':28,
+    'random_pick_weapons': 29,
+    'random_pick_players': 30,
+    'random_pick_filters': 31,
 }
 
 
@@ -3694,10 +4189,8 @@ def get_persisted_value(key: str, default: str = "") -> str:
 
 def set_persisted_value(key: str, value: str) -> None:
     lines = read_localconfig_lines()
-    # ensure list long enough
     max_idx = max(PERSIST_INDEX.values())
     if len(lines) <= max_idx:
-        # pad with empty strings
         lines += [""] * (max_idx + 1 - len(lines))
     lines[PERSIST_INDEX[key]] = value if value is not None else ""
     write_localconfig_lines(lines)
@@ -3747,12 +4240,7 @@ _theme_cache = None  # module-level cache: None | True (dark) | False (light)
 
 
 def load_theme_preference():
-    """Return True for dark, False for light. Defaults to dark.
-
-    Result is cached so frequent callers (e.g. sanction card construction)
-    avoid re-reading localconfig on every invocation. Invalidated
-    automatically on save_theme_preference().
-    """
+    """Return True for dark, False for light. Defaults to dark. Cached; save_theme_preference() invalidates."""
     global _theme_cache
     if _theme_cache is None:
         val = (get_persisted_value('theme', 'dark') or 'dark').strip().lower()
@@ -3769,14 +4257,10 @@ def save_theme_preference(is_dark_theme):
 
 
 def _build_stylesheet(palette: dict) -> str:
-    """Build the app-wide QSS from a palette dict.
-
-    Both themes share identical structure; only the colour values differ.
-    Keeping one builder means visual changes happen in one place.
-    """
+    """Build the app-wide QSS from a palette. Both themes share the same structure — only colours differ."""
     p = palette
     return f"""
-    /* ── Base ──────────────────────────────────────────────────────── */
+    /* Base */
     QWidget {{
         background-color: {p['bg']};
         color: {p['fg']};
@@ -3788,7 +4272,7 @@ def _build_stylesheet(palette: dict) -> str:
         color: {p['fg']};
     }}
 
-    /* ── Group boxes ───────────────────────────────────────────────── */
+    /* Group boxes */
     QGroupBox {{
         background-color: {p['surface']};
         border: 1px solid {p['border']};
@@ -3807,7 +4291,7 @@ def _build_stylesheet(palette: dict) -> str:
         background-color: {p['surface']};
     }}
 
-    /* ── Buttons ───────────────────────────────────────────────────── */
+    /* Buttons */
     QPushButton {{
         background-color: {p['btn_bg']};
         border: 1px solid {p['btn_border']};
@@ -3834,7 +4318,7 @@ def _build_stylesheet(palette: dict) -> str:
         border: 1px solid {p['border']};
     }}
 
-    /* ── Inputs ────────────────────────────────────────────────────── */
+    /* Inputs */
     QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
         background-color: {p['input_bg']};
         border: 1px solid {p['border']};
@@ -3868,7 +4352,7 @@ def _build_stylesheet(palette: dict) -> str:
         selection-color: #ffffff;
     }}
 
-    /* ── Check boxes ───────────────────────────────────────────────── */
+    /* Check boxes */
     QCheckBox {{
         spacing: 8px;
         color: {p['fg']};
@@ -3893,13 +4377,13 @@ def _build_stylesheet(palette: dict) -> str:
         border: 1px solid {p['border']};
     }}
 
-    /* ── Labels ────────────────────────────────────────────────────── */
+    /* Labels */
     QLabel {{
         color: {p['fg']};
         background-color: transparent;
     }}
 
-    /* ── List widgets ──────────────────────────────────────────────── */
+    /* List widgets */
     QListWidget {{
         background-color: {p['surface']};
         border: 1px solid {p['border']};
@@ -3922,7 +4406,57 @@ def _build_stylesheet(palette: dict) -> str:
         background-color: {p['row_hover']};
     }}
 
-    /* ── Progress bars ─────────────────────────────────────────────── */
+    /* Table widgets */
+    QTableView, QTableWidget {{
+        background-color: {p['surface']};
+        alternate-background-color: {p['surface_alt']};
+        border: 1px solid {p['border']};
+        border-radius: {UI_RADIUS_SMALL}px;
+        color: {p['fg']};
+        gridline-color: {p['row_sep']};
+        selection-background-color: {p['accent']};
+        selection-color: #ffffff;
+        outline: 0;
+    }}
+    QTableView::item, QTableWidget::item {{
+        padding: 4px 6px;
+        border: none;
+    }}
+    QTableView::item:selected, QTableWidget::item:selected {{
+        background-color: {p['accent']};
+        color: #ffffff;
+    }}
+    QTableView::item:hover, QTableWidget::item:hover {{
+        background-color: {p['row_hover']};
+    }}
+    QHeaderView {{
+        background-color: {p['surface_alt']};
+        border: none;
+    }}
+    QHeaderView::section {{
+        background-color: {p['surface_alt']};
+        color: {p['fg_muted']};
+        padding: 6px 8px;
+        border: none;
+        border-right: 1px solid {p['row_sep']};
+        border-bottom: 1px solid {p['border']};
+        font-weight: 600;
+    }}
+    QHeaderView::section:last {{
+        border-right: none;
+    }}
+    QHeaderView::section:hover {{
+        background-color: {p['row_hover']};
+        color: {p['fg']};
+    }}
+    QTableCornerButton::section {{
+        background-color: {p['surface_alt']};
+        border: none;
+        border-right: 1px solid {p['row_sep']};
+        border-bottom: 1px solid {p['border']};
+    }}
+
+    /* Progress bars */
     QProgressBar {{
         background-color: {p['surface']};
         border: 1px solid {p['border']};
@@ -3936,7 +4470,7 @@ def _build_stylesheet(palette: dict) -> str:
         border-radius: 3px;
     }}
 
-    /* ── Dialog button box ─────────────────────────────────────────── */
+    /* Dialog button box */
     QDialogButtonBox {{
         button-layout: 2;
     }}
@@ -3948,7 +4482,7 @@ def _build_stylesheet(palette: dict) -> str:
         min-height: 26px;
     }}
 
-    /* ── Tool tips ─────────────────────────────────────────────────── */
+    /* Tool tips */
     QToolTip {{
         background-color: {p['tooltip_bg']};
         color: {p['tooltip_fg']};
@@ -3957,7 +4491,7 @@ def _build_stylesheet(palette: dict) -> str:
         padding: 5px 8px;
     }}
 
-    /* ── Scroll bars ───────────────────────────────────────────────── */
+    /* Scroll bars */
     QScrollBar:vertical {{
         background-color: {p['scroll_track']};
         width: 11px;
@@ -3996,7 +4530,7 @@ def _build_stylesheet(palette: dict) -> str:
         background: none;
     }}
 
-    /* ── Scroll area ───────────────────────────────────────────────── */
+    /* Scroll area */
     QScrollArea {{
         background-color: transparent;
         border: none;
@@ -4005,7 +4539,7 @@ def _build_stylesheet(palette: dict) -> str:
 
 
 def apply_dark_theme(app):
-    """Apply a dark theme to the entire application"""
+    """Apply the dark theme to the whole app."""
     palette = {
         'bg':                   '#262626',
         'surface':              '#2f2f2f',
@@ -4035,7 +4569,7 @@ def apply_dark_theme(app):
     app.setStyleSheet(_build_stylesheet(palette))
 
 def apply_light_theme(app):
-    """Apply a light theme to the entire application"""
+    """Apply the light theme to the whole app."""
     palette = {
         'bg':                   '#f4f5f7',
         'surface':              '#ffffff',
@@ -4065,26 +4599,17 @@ def apply_light_theme(app):
     app.setStyleSheet(_build_stylesheet(palette))
 
 class _ReleaseNotesFetchBridge(QObject):
-    # body is `object` so it can carry str or None across threads.
+    # `object` lets the second arg carry either str or None across threads.
     fetched = pyqtSignal(str, object)
 
 
 def _should_show_post_update_notes() -> bool:
-    """True if the running exe was just installed by the autoupdater and we
-    haven't yet shown its release notes.
+    """True if the autoupdater installed this exe and we haven't shown its release notes yet.
 
-    Compares two markers in the autoupdater state file:
-      - `installed_local_file_version` is written by the autoupdater
-        (current AND historical versions back to v4.5.4) every time it
-        successfully applies an update.
-      - `notes_shown_for_local_version` is written by us once the dialog
-        is acknowledged, so we don't re-show it on every launch.
-
-    State-based detection is used instead of the old `--post-update=` argv
-    flag because that flag depends on the *old* updater knowing to set it
-    — older releases (e.g. v4.5.4) don't, so a v4.5.4 → current upgrade
-    would never trigger the dialog. The state file was already being
-    written by those older updaters, so it's the reliable signal.
+    Detection uses two markers in the autoupdater state file: `installed_local_file_version`
+    (written by every updater back to v4.5.4) and `notes_shown_for_local_version` (we write
+    this when the dialog is dismissed). We can't use the old `--post-update=` argv flag
+    because older updaters don't set it.
     """
     if not getattr(sys, "frozen", False):
         return False
@@ -4101,9 +4626,7 @@ def _should_show_post_update_notes() -> bool:
 
 
 def _mark_post_update_notes_shown() -> None:
-    """Persist `notes_shown_for_local_version` so the dialog won't appear
-    on subsequent launches of the same installed version.
-    """
+    """Persist `notes_shown_for_local_version` so the dialog doesn't appear again for this version."""
     try:
         from core.autoupdater import _load_state, _save_state
         st = _load_state()
@@ -4116,20 +4639,11 @@ def _mark_post_update_notes_shown() -> None:
 
 
 def _show_release_notes_dialog(parent):
-    """Fetch and display the latest GitHub release notes in a modal dialog.
+    """Fetch and show the latest GitHub release notes in a modal dialog.
 
-    The HTTP fetch runs on a daemon thread so the GUI stays responsive; the
-    dialog itself is built on the main thread once the worker emits its
-    `fetched` signal (forced QueuedConnection routes the slot to the bridge's
-    thread, never the worker).
-
-    Targets `/releases/latest` — the user has just been autoupdated to the
-    newest release, so that's what they're running and what they want notes
-    for. Avoids guessing tag-name conventions from the stored semver.
-
-    On fetch failure (offline, GitHub unreachable), shows a minimal fallback
-    dialog with a clickable link to the releases page so the user can view
-    notes manually when back online.
+    Fetch runs on a daemon thread; the dialog is built on the main thread when the bridge
+    emits `fetched`. Targets `/releases/latest` since the user was just autoupdated to it.
+    On fetch failure, falls back to a minimal dialog with a clickable releases-page link.
     """
     import urllib.request
     from PyQt5.QtWidgets import QTextBrowser
@@ -4142,8 +4656,7 @@ def _show_release_notes_dialog(parent):
     api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     web_url = f"https://github.com/{GITHUB_REPO}/releases/latest"
 
-    # Parented to `parent` so the bridge (and its signal connection) is cleaned
-    # up with the dashboard rather than leaking.
+    # Parent it to `parent` so the bridge dies with the dashboard.
     bridge = _ReleaseNotesFetchBridge(parent)
 
     def _build_and_show(title, body):
@@ -4179,10 +4692,8 @@ def _show_release_notes_dialog(parent):
             except (AttributeError, TypeError):
                 browser.setPlainText(text)
 
-            # Size the browser to its rendered content. Set the document's
-            # text width first so .size() reflects the wrapped layout at the
-            # width we'll actually display, then bound by the screen so a
-            # very long release body still produces a dialog that fits.
+            # Set the document's text width before measuring so .size() reflects the
+            # wrapped layout at the width we'll actually display. Cap by screen height.
             content_width = 640
             doc = browser.document()
             doc.setDocumentMargin(8)
@@ -4203,16 +4714,13 @@ def _show_release_notes_dialog(parent):
 
         dlg.adjustSize()
         dlg.exec_()
-        # Persist after the user has actually seen the dialog, so a crash
-        # on the dashboard right after the update doesn't suppress the
-        # notes on the next launch.
+        # Persist only after the user actually saw the dialog — a crash before this
+        # leaves the marker unwritten so we'll show it again next launch.
         _mark_post_update_notes_shown()
         bridge.deleteLater()
 
-    # Explicit QueuedConnection: the slot is a free Python function (closure),
-    # so AutoConnection can't always infer that the slot must run on the
-    # bridge's thread (the GUI thread). Forcing Queued guarantees the dialog
-    # is built on the main thread, never on the fetch worker thread.
+    # Force QueuedConnection so the dialog is always built on the GUI thread,
+    # not on the fetch worker.
     bridge.fetched.connect(_build_and_show, Qt.QueuedConnection)
 
     def _fetch():
@@ -4238,19 +4746,17 @@ def _show_release_notes_dialog(parent):
 
 
 def main():
-    # ---- Auto-update (Windows packaged .exe only) ----
-    # If an update is available, a temporary updater copy of this executable is spawned,
-    # this process exits, the updater replaces the old .exe, and then relaunches the app.
-    #
-    # NOTE: The updater process itself runs this same entrypoint with '--apply-update'.
-    # In that mode we do NOT start the full dashboard UI.
+    # Auto-update for the packaged Windows .exe. If an update is available a temporary updater
+    # copy of this exe spawns, this process exits, and the updater replaces the original and
+    # relaunches. The updater process runs this same entrypoint with '--apply-update' — in that
+    # mode we never start the full UI.
     try:
         from core import autoupdater
         if "--apply-update" in sys.argv:
             if autoupdater.handle_update_flow():
                 sys.exit(0)
     except Exception:
-        # If updater mode fails, just exit to avoid launching the full UI while files may be changing.
+        # Bail in updater mode rather than launching the UI while files may be changing.
         if "--apply-update" in sys.argv:
             sys.exit(0)
 
@@ -4309,20 +4815,16 @@ def main():
     else:
         apply_light_theme(app)
 
-    # Start parsing the discord log into the cache on a daemon thread now,
-    # so it overlaps with theme setup, the waiting dialog, webhook init,
-    # and dashboard construction. Idempotent — calling it again from
-    # ChivalryWaitingDialog.__init__ is a no-op when this one is in flight.
+    # Warm the discord log cache early so it overlaps with theme setup, the waiting dialog,
+    # webhook init, and dashboard construction.
     _warm_log_cache_async()
 
     if "--no-wait" not in sys.argv and not check_chivalry_window():
         waiting_dialog = ChivalryWaitingDialog()
         result = waiting_dialog.exec_()
-        # If dialog was rejected (closed with X or Esc), exit the application
         if result == QDialog.Rejected:
             sys.exit(0)
 
-    # Initialize Discord webhooks at startup
     import core.wehbooks as wehbooks
     webhook_initialized = wehbooks.initialize_webhook()
     if webhook_initialized:
@@ -4330,8 +4832,7 @@ def main():
     else:
         print("[STARTUP] Discord webhooks not configured or failed to initialize")
 
-    # File presence check only — entry count comes from the cache once the
-    # background warmup thread finishes, so startup never blocks on parse.
+    # Only check that the log file exists — the entry count comes from the cache once warmup completes.
     if os.path.exists(DISCORD_LOG_FILE):
         print("[STARTUP] Discord logs history file found — parsing in background")
     else:
@@ -4340,17 +4841,11 @@ def main():
     window = AdminDashboard()
     window.show()
 
-    # Kick off a silent Discord log scrape once the dashboard is up so the
-    # local history file is refreshed without any user action.
+    # Refresh the local sanction history once the dashboard is up.
     _schedule_silent_discord_scrape(window)
 
-    # Post-update "What's new?" banner: fires on the first launch after the
-    # autoupdater applied a new release. Detection is done via the
-    # autoupdater state file (see _should_show_post_update_notes) rather
-    # than an argv flag, so it works even when the *previous* version's
-    # updater didn't know to set such a flag. The call returns immediately
-    # — the dialog opens once the worker thread finishes the GitHub fetch
-    # and emits its signal back to the main thread.
+    # Show "What's new?" on the first launch after an autoupdate. The fetch runs in the
+    # background and the dialog opens when it finishes.
     if _should_show_post_update_notes():
         try:
             _show_release_notes_dialog(window)

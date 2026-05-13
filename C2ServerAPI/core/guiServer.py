@@ -1,16 +1,14 @@
-"""Provides a class encapsulating a chivalry 2 instance"""
+"""Wrapper around a running Chivalry 2 instance."""
 
 import win32gui, win32process, win32api
 from time import sleep
 from . import inputLib
 
 class Chivalry:
-    """Class representing a running instance of the Chivalry 2 game.
+    """A running Chivalry 2 game, driven via Windows input emulation.
 
-    This class provides methods for interacting with the Chivalry 2 game programatically
-        using windows input emulation. Using this class may cause difficulties using the
-        computer for anything other than chivalry, and may even make it difficult for the
-        user to close it depending on how it's used. USE WITH CAUTION!
+    Heavy use of this class can make the computer hard to use for anything else
+    while it's running — sometimes even hard to close. Use with caution.
     """
     def __init__(self):
         if self.getChivalryWindowHandle() == 0:
@@ -20,34 +18,44 @@ class Chivalry:
 
     __windowHandle = -1
     def getChivalryWindowHandle(self):
-        """Obtains and returns the win32 window handle of a chivalry 2 process running on this computer.
-        
-        This function will only make the associated syscalls once. After that, the cached window handle from the
-            first call will be returned instead, regardless of it's validity.
-        """
+        """Return the cached win32 handle of the Chivalry 2 window, looking it up on first call."""
         if self.__windowHandle != -1:
             return self.__windowHandle
         else:
-            hwnd = win32gui.FindWindow(None, "Chivalry 2  ") #note the spaces after the 2 here. They're important.
+            # The trailing spaces in the window title are intentional.
+            hwnd = win32gui.FindWindow(None, "Chivalry 2  ")
             self.__windowHandle = hwnd
-            sleep(0.1) #window handle doesn't seem to be valid until after a warmup period
+            sleep(0.1)  # handle isn't reliably valid until after a brief warmup
             return hwnd
 
     def getFocus(self, hwnd):
-        """Give the chivalry 2 window user focus."""
+        """Bring the Chivalry 2 window to the foreground.
+
+        We only attach the thread input queue for the SetFocus/SetForegroundWindow
+        calls and detach immediately after. Staying attached makes the dashboard
+        and game share an input queue, which causes injected keystrokes to drain
+        in a batch instead of arriving at the game one by one.
+        """
         remote_thread, _ = win32process.GetWindowThreadProcessId(hwnd)
-        win32process.AttachThreadInput(win32api.GetCurrentThreadId(), remote_thread, True)
-        win32gui.SetFocus(hwnd)
-        win32gui.SetForegroundWindow(hwnd)
-        sleep(0.5) #window focus also seem to need a warmup period to avoid race condition with short commands (e.g. listplayers)
+        own_thread = win32api.GetCurrentThreadId()
+        attached = False
+        try:
+            win32process.AttachThreadInput(own_thread, remote_thread, True)
+            attached = True
+            win32gui.SetFocus(hwnd)
+            win32gui.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                try:
+                    win32process.AttachThreadInput(own_thread, remote_thread, False)
+                except Exception:
+                    pass
+        sleep(0.5)  # focus needs a warmup before short commands (e.g. listplayers) won't race
 
 
 
     def consoleSend(self, message):
-        """Send a command to the chivalry console.
-
-        @param message: Command string to send to console
-        """
+        """Send a command to the Chivalry console."""
         hwnd = self.getChivalryWindowHandle()
         print(f"[CONSOLESEND] Game window handle: {hwnd}")
         self.getFocus(hwnd)
@@ -75,10 +83,7 @@ class Chivalry:
             print("[CONSOLESEND] ERROR: Command sending failed")
 
     def openConsole(self):
-        """Open the chivalry console into extended mode.
-
-        PRECONDITION: The chivalry console is currently closed
-        """
+        """Open the Chivalry console in extended mode. Assumes the console is currently closed."""
         print("[OPENCONSOLE] Opening console...")
         hwnd = self.getChivalryWindowHandle()
         print(f"[OPENCONSOLE] Game window handle: {hwnd}")
@@ -104,11 +109,7 @@ class Chivalry:
 
 
     def SavePreset(self, slot, payload):
-        """Save a preset to a slot.
-
-        @param slot: The slot to save to (0-9)
-        @param payload: The reason text or combined reason/duration to save
-        """
+        """Save a preset payload to slot 0-9."""
         import os
 
         localconfig = "localconfig"
@@ -139,11 +140,7 @@ class Chivalry:
             return False
 
     def LoadPreset(self, slot):
-        """Load the preset payload from a slot.
-
-        @param slot: The slot to load from (0-9)
-        @returns: The stored payload (string) or None if not found
-        """
+        """Load the preset payload from slot 0-9, or None if empty."""
         import os
 
         localconfig = "localconfig"
@@ -162,10 +159,7 @@ class Chivalry:
             return None
 
     def GetAllPresets(self):
-        """Get all saved presets as a dictionary.
-
-        @returns: Dictionary with slot numbers as keys and payload strings as values
-        """
+        """Return all saved presets as {slot_str: payload}."""
         import os
 
         localconfig = "localconfig"
