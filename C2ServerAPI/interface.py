@@ -4,8 +4,7 @@ from PyQt5.QtWidgets import (
     QFormLayout, QLineEdit, QDialogButtonBox, QMessageBox, QListWidget, QHBoxLayout,
     QGroupBox, QSpacerItem, QSizePolicy, QInputDialog, QProgressBar, QCheckBox, QToolTip, QGridLayout,
     QScrollArea, QFrame, QListWidgetItem, QStyledItemDelegate, QStyle,
-    QTableWidget, QTableWidgetItem, QComboBox, QHeaderView, QAbstractItemView,
-    QStylePainter, QStyleOptionComboBox
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
 )
 from PyQt5.QtGui import QFont, QIntValidator, QCursor, QDesktopServices, QColor, QBrush
 from PyQt5.QtCore import Qt, QTimer, QObject, QEvent, QUrl, pyqtSignal
@@ -1936,37 +1935,43 @@ class AdminDashboard(QWidget):
         main_layout.addWidget(btn_sanction_search)
 
         settings_group = QGroupBox("Settings")
-        settings_layout = QVBoxLayout()
+        settings_layout = QGridLayout()
         settings_layout.setContentsMargins(UI_PAD_SECTION, UI_PAD_INNER, UI_PAD_SECTION, UI_PAD_INNER)
-        settings_layout.setSpacing(UI_PAD_TIGHT)
+        settings_layout.setHorizontalSpacing(UI_SPACING_INNER)
+        settings_layout.setVerticalSpacing(UI_PAD_TIGHT)
 
         btn_webhook_config = QPushButton("Configure Discord Webhook")
         btn_webhook_config.clicked.connect(self.configure_discord_webhook)
-        settings_layout.addWidget(btn_webhook_config)
 
         btn_discord_id_config = QPushButton("Configure Discord User ID")
         btn_discord_id_config.clicked.connect(self.configure_discord_user_id)
-        settings_layout.addWidget(btn_discord_id_config)
 
         btn_discord_bot_token = QPushButton("Set Discord Bot Token")
         btn_discord_bot_token.clicked.connect(self.configure_discord_bot_token)
-        settings_layout.addWidget(btn_discord_bot_token)
 
         btn_discord_channel_id = QPushButton("Set Discord Channel ID")
         btn_discord_channel_id.clicked.connect(self.configure_discord_channel_id)
-        settings_layout.addWidget(btn_discord_channel_id)
 
         btn_fetch_discord = QPushButton("Fetch Discord Channel Messages")
         btn_fetch_discord.clicked.connect(self.fetch_discord_channel_messages)
-        settings_layout.addWidget(btn_fetch_discord)
 
         btn_console_key = QPushButton("Configure Console Key")
         btn_console_key.clicked.connect(self.configure_console_key)
-        settings_layout.addWidget(btn_console_key)
 
         self.theme_button = QPushButton("Dark Mode")
         self.theme_button.clicked.connect(self.toggle_theme)
-        settings_layout.addWidget(self.theme_button)
+
+        settings_buttons = [
+            btn_webhook_config, btn_discord_id_config,
+            btn_discord_bot_token, btn_discord_channel_id,
+            btn_fetch_discord, btn_console_key,
+            self.theme_button,
+        ]
+        SETTINGS_COLS = 4
+        for i, btn in enumerate(settings_buttons):
+            settings_layout.addWidget(btn, i // SETTINGS_COLS, i % SETTINGS_COLS)
+        for col in range(SETTINGS_COLS):
+            settings_layout.setColumnStretch(col, 1)
 
         settings_group.setLayout(settings_layout)
         main_layout.addWidget(settings_group)
@@ -3253,35 +3258,6 @@ class FirstToScoreboardWindow(QDialog):
             pass
         return False
 
-class _CenteredComboBox(QComboBox):
-    """QComboBox that paints the displayed text centered within the field area.
-
-    The default style paints text left-aligned. The popup list is centered via
-    `_CenteredItemDelegate`.
-    """
-
-    def paintEvent(self, _event):
-        painter = QStylePainter(self)
-        opt = QStyleOptionComboBox()
-        self.initStyleOption(opt)
-        # Draw the frame + arrow without the (left-aligned) label.
-        opt.currentText = ""
-        painter.drawComplexControl(QStyle.CC_ComboBox, opt)
-        field_rect = self.style().subControlRect(
-            QStyle.CC_ComboBox, opt, QStyle.SC_ComboBoxEditField, self
-        )
-        painter.drawItemText(
-            field_rect, Qt.AlignCenter, self.palette(),
-            self.isEnabled(), self.currentText()
-        )
-
-
-class _CenteredItemDelegate(QStyledItemDelegate):
-    def initStyleOption(self, option, index):
-        super().initStyleOption(option, index)
-        option.displayAlignment = Qt.AlignCenter
-
-
 class RandomPickDialog(QDialog):
     """Dialog for randomly picking one weapon and one player from cached lists.
 
@@ -3290,7 +3266,41 @@ class RandomPickDialog(QDialog):
     two-handed only. The result is announced via ServerSay on demand.
     """
 
-    HAND_OPTIONS = ("2H", "1H")
+    WEAPONS_CATALOG = (
+        ("Battle Axe", "2H"),
+        ("Dane", "2H"),
+        ("Executioners Axe", "2H"),
+        ("Glaive", "2H"),
+        ("Greatsword", "2H"),
+        ("Halberd", "2H"),
+        ("Heavy Mace", "2H"),
+        ("Longsword", "2H"),
+        ("Maul", "2H"),
+        ("Messer", "2H"),
+        ("Poleaxe", "2H"),
+        ("Polehammer", "2H"),
+        ("Shovel", "2H"),
+        ("Sledgehammer", "2H"),
+        ("Spear", "2H"),
+        ("Two-Handed Hammer", "2H"),
+        ("War Axe", "2H"),
+        ("War Club", "2H"),
+        ("Highland sword", "2H"),
+        ("Goadendag", "2H"),
+        ("Quarterstaff", "2H"),
+        ("Katar", "2H"),
+        ("Axe", "1H"),
+        ("Warhammer", "1H"),
+        ("Pickaxe", "1H"),
+        ("Short sword", "1H"),
+        ("Rapier", "1H"),
+        ("One handed spear", "1H"),
+        ("Hatchet", "1H"),
+        ("Knife", "1H"),
+        ("Sword", "1H"),
+        ("Falchion", "1H"),
+        ("Dagger", "1H"),
+    )
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3299,6 +3309,15 @@ class RandomPickDialog(QDialog):
         self.setSizeGripEnabled(True)
 
         self._suspend_persist = True
+
+        # In-memory exclude state keyed by PlayFab ID (upper-cased). Lives only for the
+        # lifetime of the dialog so re-excluding the same players between quick refreshes
+        # isn't needed, but excludes clear once the dialog is closed.
+        self._player_excludes = {}
+        # ListPlayers async machinery — mirrors PlayersWindow so refreshes stream rows.
+        self._active_resolve_workers = []
+        self._resolve_gen = 0
+        self._awaiting_player_list = False
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER, UI_PAD_OUTER)
@@ -3370,6 +3389,8 @@ class RandomPickDialog(QDialog):
         _theme_bus.theme_changed.connect(self._apply_table_selection_theme)
         self.finished.connect(self._disconnect_theme_bus)
 
+        QTimer.singleShot(0, self._initial_player_fetch)
+
     def _apply_table_selection_theme(self, is_dark: bool):
         if is_dark:
             sel_bg = "#454545"
@@ -3409,28 +3430,18 @@ class RandomPickDialog(QDialog):
         self.weapons_table.verticalHeader().setVisible(False)
         self.weapons_table.verticalHeader().setDefaultSectionSize(44)
         self.weapons_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.weapons_table.setEditTriggers(
-            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed
-        )
+        self.weapons_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         header = self.weapons_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.Fixed)
         header.setSectionResizeMode(2, QHeaderView.Fixed)
         self.weapons_table.setColumnWidth(1, 80)
         self.weapons_table.setColumnWidth(2, 70)
-        self.weapons_table.itemChanged.connect(self._on_weapon_item_changed)
-        v.addWidget(self.weapons_table, 1)
 
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(UI_PAD_TIGHT)
-        add_btn = QPushButton("Add Weapon")
-        add_btn.clicked.connect(lambda: self._add_weapon_row("", "1H", False, focus=True))
-        remove_btn = QPushButton("Remove Selected")
-        remove_btn.clicked.connect(lambda: self._remove_selected_rows(self.weapons_table))
-        btn_row.addWidget(add_btn)
-        btn_row.addWidget(remove_btn)
-        btn_row.addStretch(1)
-        v.addLayout(btn_row)
+        for name, hand in self.WEAPONS_CATALOG:
+            self._add_weapon_row(name, hand, False)
+
+        v.addWidget(self.weapons_table, 1)
 
         group.setLayout(v)
         return group
@@ -3446,24 +3457,18 @@ class RandomPickDialog(QDialog):
         self.players_table.verticalHeader().setVisible(False)
         self.players_table.verticalHeader().setDefaultSectionSize(44)
         self.players_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.players_table.setEditTriggers(
-            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed
-        )
+        self.players_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         header = self.players_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.Fixed)
         self.players_table.setColumnWidth(1, 70)
-        self.players_table.itemChanged.connect(self._on_player_item_changed)
         v.addWidget(self.players_table, 1)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(UI_PAD_TIGHT)
-        add_btn = QPushButton("Add Player")
-        add_btn.clicked.connect(lambda: self._add_player_row("", False, focus=True))
-        remove_btn = QPushButton("Remove Selected")
-        remove_btn.clicked.connect(lambda: self._remove_selected_rows(self.players_table))
-        btn_row.addWidget(add_btn)
-        btn_row.addWidget(remove_btn)
+        self.refresh_players_btn = QPushButton("Refresh Players")
+        self.refresh_players_btn.clicked.connect(self.refresh_player_list)
+        btn_row.addWidget(self.refresh_players_btn)
         btn_row.addStretch(1)
         v.addLayout(btn_row)
 
@@ -3472,60 +3477,38 @@ class RandomPickDialog(QDialog):
 
     # ---- row management ----
 
-    def _add_weapon_row(self, name: str, hand: str, exclude: bool, focus: bool = False):
+    def _add_weapon_row(self, name: str, hand: str, exclude: bool):
         table = self.weapons_table
         row = table.rowCount()
         table.insertRow(row)
 
         name_item = QTableWidgetItem(name)
+        name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
         table.setItem(row, 0, name_item)
 
-        combo = _CenteredComboBox()
-        combo.addItems(self.HAND_OPTIONS)
-        combo.setCurrentText(hand if hand in self.HAND_OPTIONS else "2H")
-        combo.setMinimumWidth(40)
-        combo.setItemDelegate(_CenteredItemDelegate(combo))
-        combo.view().setTextElideMode(Qt.ElideNone)
-        combo.currentTextChanged.connect(lambda _t: self._persist_weapons())
-
-        combo_wrapper = QWidget()
-        cw_layout = QHBoxLayout(combo_wrapper)
-        cw_layout.setContentsMargins(UI_PAD_TIGHT, 2, UI_PAD_TIGHT, 2)
-        cw_layout.addWidget(combo)
-        table.setCellWidget(row, 1, combo_wrapper)
+        hand_item = QTableWidgetItem(hand)
+        hand_item.setTextAlignment(Qt.AlignCenter)
+        hand_item.setFlags(hand_item.flags() & ~Qt.ItemIsEditable)
+        table.setItem(row, 1, hand_item)
 
         cb_widget, cb = self._make_centered_checkbox(exclude)
         cb.toggled.connect(lambda _v: self._persist_weapons())
         table.setCellWidget(row, 2, cb_widget)
 
-        if focus:
-            table.editItem(name_item)
-
-    def _add_player_row(self, name: str, exclude: bool, focus: bool = False):
+    def _add_player_row(self, name: str, pid: str, exclude: bool):
         table = self.players_table
         row = table.rowCount()
         table.insertRow(row)
 
         name_item = QTableWidgetItem(name)
+        name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+        # Stash the PlayFab ID on the row so exclude toggles can key against it.
+        name_item.setData(Qt.UserRole, pid or "")
         table.setItem(row, 0, name_item)
 
         cb_widget, cb = self._make_centered_checkbox(exclude)
-        cb.toggled.connect(lambda _v: self._persist_players())
+        cb.toggled.connect(lambda checked, p=pid: self._on_player_exclude_toggled(p, checked))
         table.setCellWidget(row, 1, cb_widget)
-
-        if focus:
-            table.editItem(name_item)
-
-    def _remove_selected_rows(self, table: QTableWidget):
-        rows = sorted({idx.row() for idx in table.selectionModel().selectedRows()}, reverse=True)
-        if not rows:
-            return
-        for r in rows:
-            table.removeRow(r)
-        if table is self.weapons_table:
-            self._persist_weapons()
-        else:
-            self._persist_players()
 
     @staticmethod
     def _make_centered_checkbox(checked: bool):
@@ -3565,15 +3548,148 @@ class RandomPickDialog(QDialog):
 
     # ---- change handlers ----
 
-    def _on_weapon_item_changed(self, _item):
-        if self._suspend_persist:
-            return
-        self._persist_weapons()
+    def _on_player_exclude_toggled(self, pid: str, checked: bool):
+        if pid:
+            self._player_excludes[pid.upper()] = checked
 
-    def _on_player_item_changed(self, _item):
-        if self._suspend_persist:
+    # ---- player list refresh (ListPlayers flow) ----
+
+    def _initial_player_fetch(self):
+        parent = self.parent()
+        game = getattr(parent, 'game', None)
+        connected = bool(getattr(parent, 'chivalry_connected', False))
+        if not connected or game is None or not hasattr(game, 'ListPlayers'):
+            QMessageBox.warning(
+                self,
+                "Chivalry 2 Not Found",
+                "Cannot refresh player list - Chivalry 2 window cannot be found.\n\nPlease ensure Chivalry 2 is running, then use the Refresh Players button."
+            )
             return
-        self._persist_players()
+        self.refresh_player_list()
+
+    def refresh_player_list(self):
+        parent = self.parent()
+        game = getattr(parent, 'game', None)
+        connected = bool(getattr(parent, 'chivalry_connected', False))
+
+        if not connected or game is None or not hasattr(game, 'ListPlayers'):
+            QMessageBox.warning(
+                self,
+                "Chivalry 2 Not Found",
+                "Cannot refresh player list - Chivalry 2 window cannot be found.\n\nPlease ensure Chivalry 2 is running."
+            )
+            return
+
+        self._awaiting_player_list = True
+
+        # Parallel sanction-log scan, mirroring PlayersWindow so the worker can pick it up.
+        self._statuses_event = threading.Event()
+        self._statuses_result = None
+        threading.Thread(
+            target=self._precompute_statuses_bg,
+            name="random-pick-status-precompute",
+            daemon=True,
+        ).start()
+
+        try:
+            game.ListPlayers()
+        except Exception as e:
+            QMessageBox.warning(self, "Game Connection Error", f"Could not refresh player list:\n{str(e)}")
+            self._awaiting_player_list = False
+            return
+
+        QTimer.singleShot(100, self._parse_player_list_from_clipboard)
+
+    def _precompute_statuses_bg(self):
+        try:
+            self._statuses_result = _compute_all_player_statuses()
+        except Exception as e:
+            print(f"[RANDOM PICK] Status precompute failed: {e}")
+            self._statuses_result = {}
+        finally:
+            self._statuses_event.set()
+
+    def _parse_player_list_from_clipboard(self):
+        if not getattr(self, '_awaiting_player_list', False):
+            return
+        try:
+            text = pyperclip.paste()
+        except Exception:
+            text = ""
+        if " - " not in (text or ""):
+            return
+        self._start_resolve_worker(text=text)
+        self._awaiting_player_list = False
+
+    def _start_resolve_worker(self, text=None, pairs=None):
+        self._resolve_gen += 1
+        gen = self._resolve_gen
+
+        # Wipe the table; rows will stream back from the worker.
+        self.players_table.setRowCount(0)
+
+        statuses_event = getattr(self, '_statuses_event', None)
+        statuses_holder = lambda: getattr(self, '_statuses_result', None)
+
+        worker = _PlayerListResolveWorker(
+            text=text,
+            pairs=pairs,
+            statuses_event=statuses_event,
+            statuses_holder=statuses_holder,
+        )
+        self._active_resolve_workers.append(worker)
+        # QueuedConnection: worker runs on a daemon thread but constructed UI-side.
+        worker.entry.connect(
+            lambda name, pid, status, g=gen: self._on_resolve_entry(name, pid, status, g),
+            Qt.QueuedConnection,
+        )
+        worker.finished.connect(
+            lambda w=worker, g=gen: self._on_resolve_finished(w, g),
+            Qt.QueuedConnection,
+        )
+        threading.Thread(
+            target=worker.run,
+            name="random-pick-player-resolve",
+            daemon=True,
+        ).start()
+
+    def _on_resolve_entry(self, name, pid, _status, gen):
+        if gen != self._resolve_gen:
+            return
+        try:
+            excluded = bool(self._player_excludes.get((pid or '').upper(), False))
+            self._add_player_row(name, pid, excluded)
+        except RuntimeError:
+            # Dialog closed mid-stream — widgets are gone.
+            pass
+
+    def _on_resolve_finished(self, worker, gen):
+        try:
+            self._active_resolve_workers.remove(worker)
+        except ValueError:
+            pass
+        if gen != self._resolve_gen:
+            return
+        # ListPlayers() typed into the game console, leaving Chivalry on top — take focus back.
+        self._bring_to_foreground()
+
+    def _bring_to_foreground(self):
+        try:
+            self.raise_()
+            self.activateWindow()
+            parent = self.parent()
+            if parent is not None:
+                parent.raise_()
+                parent.activateWindow()
+                self.raise_()
+                self.activateWindow()
+        except Exception:
+            pass
+        try:
+            hwnd = int(self.winId())
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception as e:
+            print(f"[FOCUS] Could not reclaim foreground: {e}")
 
     # ---- pick logic ----
 
@@ -3582,9 +3698,8 @@ class RandomPickDialog(QDialog):
         for row in range(self.weapons_table.rowCount()):
             name_item = self.weapons_table.item(row, 0)
             name = name_item.text().strip() if name_item else ""
-            wrapper = self.weapons_table.cellWidget(row, 1)
-            combo = wrapper.findChild(QComboBox) if wrapper is not None else None
-            hand = combo.currentText() if combo is not None else "1H"
+            hand_item = self.weapons_table.item(row, 1)
+            hand = hand_item.text() if hand_item is not None else "1H"
             cb = self._checkbox_at(self.weapons_table, row, 2)
             exclude = cb.isChecked() if cb is not None else False
             out.append({"name": name, "hand": hand, "exclude": exclude})
@@ -3701,16 +3816,9 @@ class RandomPickDialog(QDialog):
     def _persist_weapons(self):
         if self._suspend_persist:
             return
+        payload = {w["name"]: w["exclude"] for w in self._collect_weapons() if w["name"]}
         try:
-            set_persisted_value('random_pick_weapons', json.dumps(self._collect_weapons(), ensure_ascii=False))
-        except Exception:
-            pass
-
-    def _persist_players(self):
-        if self._suspend_persist:
-            return
-        try:
-            set_persisted_value('random_pick_players', json.dumps(self._collect_players(), ensure_ascii=False))
+            set_persisted_value('random_pick_weapons', json.dumps(payload, ensure_ascii=False))
         except Exception:
             pass
 
@@ -3729,28 +3837,18 @@ class RandomPickDialog(QDialog):
     def _load_persisted_state(self):
         try:
             weapons_raw = get_persisted_value('random_pick_weapons', '')
-            weapons = json.loads(weapons_raw) if weapons_raw else []
+            weapons_excludes = json.loads(weapons_raw) if weapons_raw else {}
         except Exception:
-            weapons = []
-        for w in weapons:
-            if isinstance(w, dict):
-                self._add_weapon_row(
-                    str(w.get("name", "")),
-                    str(w.get("hand", "1H")),
-                    bool(w.get("exclude", False)),
-                )
-
-        try:
-            players_raw = get_persisted_value('random_pick_players', '')
-            players = json.loads(players_raw) if players_raw else []
-        except Exception:
-            players = []
-        for p in players:
-            if isinstance(p, dict):
-                self._add_player_row(
-                    str(p.get("name", "")),
-                    bool(p.get("exclude", False)),
-                )
+            weapons_excludes = {}
+        if isinstance(weapons_excludes, dict):
+            for row in range(self.weapons_table.rowCount()):
+                name_item = self.weapons_table.item(row, 0)
+                name = name_item.text() if name_item else ""
+                if not bool(weapons_excludes.get(name, False)):
+                    continue
+                cb = self._checkbox_at(self.weapons_table, row, 2)
+                if cb is not None:
+                    cb.setChecked(True)
 
         try:
             filters_raw = get_persisted_value('random_pick_filters', '')
@@ -4158,6 +4256,7 @@ def write_localconfig_lines(lines):
 # 29: random pick weapons (JSON)
 # 30: random pick players (JSON)
 # 31: random pick filters (JSON)
+# 32: first-time guide state ('pending' during onboarding, 'true' once shown)
 PERSIST_INDEX = {
     'primary_webhook':   0,
     'secondary_webhook': 1,
@@ -4175,6 +4274,7 @@ PERSIST_INDEX = {
     'random_pick_weapons': 29,
     'random_pick_players': 30,
     'random_pick_filters': 31,
+    'first_time_guide_shown': 32,
 }
 
 
@@ -4745,7 +4845,91 @@ def _show_release_notes_dialog(parent):
     threading.Thread(target=_fetch, name="release-notes-fetch", daemon=True).start()
 
 
+# Guide body shown by _show_first_time_guide(). Markdown — edit freely.
+FIRST_TIME_GUIDE_MARKDOWN = """\
+This software simulates keyboard inputs to interact with your game.
+After clicking on a button that sends a command, make sure to not input any control, otherwise the command processing could fail.
+As soon as the Chivalry 2 window rises up, you may move your mouse and wait for your camera to react in order to make sure that the input injection is completed.
+"""
+
+
+def _run_first_time_setup_flow(window):
+    """Walk a first-launch user through the four optional Discord config prompts, then open
+    the welcome guide.
+
+    Each of webhook / user ID / bot token / channel ID is shown sequentially using the same
+    methods as the dashboard's settings buttons. The user can fill any combination or cancel
+    them all — Discord setup is optional and the welcome guide always opens at the end.
+
+    Once this function finishes, `first_time_guide_shown` is flipped to 'true' so the flow
+    never runs again. If the user closes the app mid-flow, the flag stays 'pending' and the
+    flow resumes from the start on next launch.
+    """
+    try:
+        window.configure_discord_webhook()
+        window.configure_discord_user_id()
+        window.configure_discord_bot_token()
+        window.configure_discord_channel_id()
+    except Exception as e:
+        print(f"[STARTUP] First-time setup flow failed: {e}")
+    finally:
+        set_persisted_value('first_time_guide_shown', 'true')
+        try:
+            _show_first_time_guide(window)
+        except Exception as e:
+            print(f"[STARTUP] First-time guide dialog failed: {e}")
+
+
+def _show_first_time_guide(parent):
+    """Modal welcome dialog shown on the very first launch (no localconfig file).
+
+    Mirrors `_show_release_notes_dialog` so styling stays consistent: a QTextBrowser
+    rendering Markdown, sized to fit the content up to the screen height.
+    """
+    from PyQt5.QtWidgets import QTextBrowser
+
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("First time guide")
+    dlg_layout = QVBoxLayout(dlg)
+    dlg_layout.setContentsMargins(15, 15, 15, 15)
+    dlg_layout.setSpacing(10)
+
+    browser = QTextBrowser()
+    browser.setOpenExternalLinks(True)
+    try:
+        browser.setMarkdown(FIRST_TIME_GUIDE_MARKDOWN)
+    except (AttributeError, TypeError):
+        browser.setPlainText(FIRST_TIME_GUIDE_MARKDOWN)
+
+    content_width = 640
+    doc = browser.document()
+    doc.setDocumentMargin(8)
+    doc.setTextWidth(content_width)
+    doc_height = int(doc.size().height())
+
+    screen = QApplication.primaryScreen()
+    max_h = (screen.availableGeometry().height() - 240) if screen else 700
+    height = max(160, min(doc_height + 24, max_h))
+
+    browser.setMinimumWidth(content_width + 24)
+    browser.setMinimumHeight(height)
+    dlg_layout.addWidget(browser)
+
+    btns = QDialogButtonBox(QDialogButtonBox.Ok)
+    btns.accepted.connect(dlg.accept)
+    dlg_layout.addWidget(btns)
+
+    dlg.adjustSize()
+    dlg.exec_()
+
+
 def main():
+    # On a genuine fresh install (no localconfig) mark the user as in onboarding. The
+    # welcome guide stays gated behind this flag until they finish configuring the four
+    # required fields (see _check_and_show_first_time_guide). Existing users upgrading
+    # never get the flag set, so the guide never appears for them.
+    is_first_launch = not os.path.exists("localconfig")
+
     # Auto-update for the packaged Windows .exe. If an update is available a temporary updater
     # copy of this exe spawns, this process exits, and the updater replaces the original and
     # relaunches. The updater process runs this same entrypoint with '--apply-update' — in that
@@ -4851,6 +5035,17 @@ def main():
             _show_release_notes_dialog(window)
         except Exception as e:
             print(f"[POST-UPDATE] Release notes dialog failed: {e}")
+
+    # On a fresh install, mark onboarding as pending so the setup flow runs once. Existing
+    # users (file already present, flag absent) never get marked, so the flow never runs
+    # for them. A 'pending' flag from a previous mid-flow close also retriggers the flow.
+    if is_first_launch and get_persisted_value('first_time_guide_shown', '') == '':
+        set_persisted_value('first_time_guide_shown', 'pending')
+
+    if get_persisted_value('first_time_guide_shown', '') == 'pending':
+        # Deferred so the dashboard is fully shown and any other queued startup work
+        # (release notes etc.) has settled before we start the prompt sequence.
+        QTimer.singleShot(0, lambda: _run_first_time_setup_flow(window))
 
     sys.exit(app.exec_())
 
