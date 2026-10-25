@@ -3,6 +3,7 @@
 import win32gui, win32process, win32api
 from time import sleep
 from . import inputLib
+from . import localconfig
 
 class Chivalry:
     """A running Chivalry 2 game, driven via Windows input emulation.
@@ -110,72 +111,19 @@ class Chivalry:
 
     def SavePreset(self, slot, payload):
         """Save a preset payload to slot 0-9."""
-        import os
-
-        localconfig = "localconfig"
-
-        lines = []
-        if os.path.exists(localconfig):
-            try:
-                with open(localconfig, 'r', encoding='utf-8') as f:
-                    lines = f.read().splitlines()
-            except Exception:
-                lines = []
-
-        min_len = 13
-        if len(lines) < min_len:
-            lines += [""] * (min_len - len(lines))
-
-        preset_index = 3 + int(slot)
-        if len(lines) <= preset_index:
-            lines += [""] * (preset_index + 1 - len(lines))
-        lines[preset_index] = payload if payload is not None else ""
-
-        try:
-            with open(localconfig, 'w', encoding='utf-8') as f:
-                for line in lines:
-                    f.write(line + "\n")
-            return True
-        except Exception:
-            return False
+        return localconfig.set_value(localconfig.preset_key(slot), payload)
 
     def LoadPreset(self, slot):
         """Load the preset payload from slot 0-9, or None if empty."""
-        import os
-
-        localconfig = "localconfig"
-
-        if not os.path.exists(localconfig):
-            return None
-
-        try:
-            with open(localconfig, 'r', encoding='utf-8') as f:
-                lines = f.read().strip().split('\n')
-                preset_line_index = 3 + slot
-                if len(lines) > preset_line_index and lines[preset_line_index].strip():
-                    return lines[preset_line_index]
-                return None
-        except Exception:
-            return None
+        payload = localconfig.get_value(localconfig.preset_key(slot))
+        return payload if payload.strip() else None
 
     def GetAllPresets(self):
         """Return all saved presets as {slot_str: payload}."""
-        import os
-
-        localconfig = "localconfig"
+        settings = localconfig.load_all()
         presets = {}
-
-        if not os.path.exists(localconfig):
-            return presets
-
-        try:
-            with open(localconfig, 'r', encoding='utf-8') as f:
-                lines = f.read().strip().split('\n')
-                for i in range(10):
-                    preset_line_index = 3 + i
-                    if len(lines) > preset_line_index and lines[preset_line_index].strip():
-                        presets[str(i)] = lines[preset_line_index]
-        except Exception:
-            pass
-
+        for i in range(localconfig.PRESET_COUNT):
+            payload = settings.get(localconfig.preset_key(i), '')
+            if payload.strip():
+                presets[str(i)] = payload
         return presets

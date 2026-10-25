@@ -5,6 +5,7 @@ import ctypes
 from ctypes import wintypes
 import win32api, win32con
 import pyperclip
+from . import localconfig
 
 KEY_PRESS_DURATION = 0.002
 KEY_SEQUENCE_DELAY = 0.002
@@ -192,19 +193,14 @@ def getConsoleKey():
         return _console_key_cache
 
     try:
-        import os
-        cfg_path = os.path.join(os.getcwd(), "localconfig")
-        if os.path.exists(cfg_path):
-            try:
-                with open(cfg_path, 'r', encoding='utf-8') as f:
-                    lines = f.read().splitlines()
-                if len(lines) > 26 and lines[26].strip():
-                    vk_val = int(lines[26].strip())
-                    result = (None, vk_val)
-                    _console_key_cache = result
-                    return result
-            except Exception:
-                pass
+        try:
+            vk_raw = localconfig.get_value('console_vk').strip()
+            if vk_raw:
+                result = (None, int(vk_raw))
+                _console_key_cache = result
+                return result
+        except Exception:
+            pass
 
         layout_id = win32api.GetKeyboardLayout(0)
         lang_id = layout_id & 0xFFFF

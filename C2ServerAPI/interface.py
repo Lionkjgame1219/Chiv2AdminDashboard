@@ -22,6 +22,7 @@ from time import sleep
 
 from core.C2ServerAPIExample import GameChivalry
 import core.wehbooks as wehbooks
+import core.localconfig as localconfig
 
 
 # Design tokens — single source of truth for spacing, radii and accent colours.
@@ -2541,6 +2542,19 @@ class AdminDashboard(QWidget):
             else:
                 print("[SCRAPE] Skipped auto-scrape: channel id not configured")
             return
+        if not channel_id.isdigit():
+            # The ID goes straight into the request URL; anything else fails there with an
+            # unhelpful urllib error.
+            _release_lock()
+            if not silent:
+                QMessageBox.warning(
+                    self, "Invalid Channel ID",
+                    "The saved Discord Channel ID is not a numeric value.\n"
+                    "Please use 'Set Discord Channel ID' to set it again."
+                )
+            else:
+                print(f"[SCRAPE] Skipped auto-scrape: invalid channel id {channel_id!r}")
+            return
 
         worker = _DiscordScrapeWorker()
         # Pin the worker to the dashboard so it isn't GC'd mid-emit.
@@ -4216,124 +4230,35 @@ def _serialize_discord_message(msg: dict, name_by_id: dict = None) -> str:
     return json.dumps(_discord_message_to_record(msg, name_by_id), ensure_ascii=False)
 
 
-# ---- Persistent last-used parameters (ban/kick/admin/server/add time) ----
-
-def read_localconfig_lines():
-    try:
-        with open("localconfig", 'r', encoding='utf-8') as f:
-            return f.read().splitlines()
-    except Exception:
-        return []
-
-
-def write_localconfig_lines(lines):
-    try:
-        with open("localconfig", 'w', encoding='utf-8') as f:
-            for line in lines:
-                f.write(line + "\n")
-        return True
-    except Exception:
-        return False
-
-
-# localconfig layout:
-# 0: primary webhook
-# 1: secondary webhook
-# 2: discord user id
-# 3..12: 10 preset lines
-# 13: theme
-# 14: last ban reason
-# 15: last ban duration
-# 16: last kick reason
-# 17: last admin message
-# 18: last server message
-# 19: last add-time minutes
-# 20..22: admin message presets (3)
-# 23..25: server message presets (3)
-# 26: console virtual key code
-# 27: discord bot token (for channel scraping)
-# 28: discord channel id (for channel scraping)
-# 29: random pick weapons (JSON)
-# 30: random pick players (JSON)
-# 31: random pick filters (JSON)
-# 32: first-time guide state ('pending' during onboarding, 'true' once shown)
-PERSIST_INDEX = {
-    'primary_webhook':   0,
-    'secondary_webhook': 1,
-    'discord_user_id':   2,
-    'theme':             13,
-    'last_ban_reason':   14,
-    'last_ban_duration': 15,
-    'last_kick_reason':  16,
-    'last_admin_msg':    17,
-    'last_server_msg':   18,
-    'last_add_time':     19,
-    'console_vk':        26,
-    'discord_bot_token': 27,
-    'discord_channel_id':28,
-    'random_pick_weapons': 29,
-    'random_pick_players': 30,
-    'random_pick_filters': 31,
-    'first_time_guide_shown': 32,
-}
-
+# ---- Persistent settings (see core/localconfig.py for the file format) ----
 
 def get_persisted_value(key: str, default: str = "") -> str:
-    lines = read_localconfig_lines()
-    idx = PERSIST_INDEX[key]
-    if len(lines) <= idx:
-        return default
-    val = lines[idx]
-    return val if val is not None else default
+    return localconfig.get_value(key, default)
 
 
 def set_persisted_value(key: str, value: str) -> None:
-    lines = read_localconfig_lines()
-    max_idx = max(PERSIST_INDEX.values())
-    if len(lines) <= max_idx:
-        lines += [""] * (max_idx + 1 - len(lines))
-    lines[PERSIST_INDEX[key]] = value if value is not None else ""
-    write_localconfig_lines(lines)
+    localconfig.set_value(key, value)
 
 
 # ---- Admin/Server message presets (3 each) ----
-ADMIN_PRESET_BASE_INDEX = 20  # lines[20..22]
-SERVER_PRESET_BASE_INDEX = 23  # lines[23..25]
-ADMIN_PRESET_COUNT = 3
-SERVER_PRESET_COUNT = 3
-
-
-def _get_text_preset(base_index: int, slot: int) -> str:
-    lines = read_localconfig_lines()
-    idx = base_index + int(slot)
-    if len(lines) <= idx:
-        return ""
-    return lines[idx]
-
-
-def _set_text_preset(base_index: int, slot: int, value: str) -> None:
-    lines = read_localconfig_lines()
-    idx = base_index + int(slot)
-    if len(lines) <= idx:
-        lines += [""] * (idx + 1 - len(lines))
-    lines[idx] = value if value is not None else ""
-    write_localconfig_lines(lines)
+ADMIN_PRESET_COUNT = localconfig.ADMIN_PRESET_COUNT
+SERVER_PRESET_COUNT = localconfig.SERVER_PRESET_COUNT
 
 
 def get_admin_preset(slot: int) -> str:
-    return _get_text_preset(ADMIN_PRESET_BASE_INDEX, slot)
+    return localconfig.get_value(localconfig.admin_preset_key(slot))
 
 
 def set_admin_preset(slot: int, value: str) -> None:
-    _set_text_preset(ADMIN_PRESET_BASE_INDEX, slot, value)
+    localconfig.set_value(localconfig.admin_preset_key(slot), value)
 
 
 def get_server_preset(slot: int) -> str:
-    return _get_text_preset(SERVER_PRESET_BASE_INDEX, slot)
+    return localconfig.get_value(localconfig.server_preset_key(slot))
 
 
 def set_server_preset(slot: int, value: str) -> None:
-    _set_text_preset(SERVER_PRESET_BASE_INDEX, slot, value)
+    localconfig.set_value(localconfig.server_preset_key(slot), value)
 
 
 _theme_cache = None  # module-level cache: None | True (dark) | False (light)
@@ -4928,7 +4853,7 @@ def main():
     # welcome guide stays gated behind this flag until they finish configuring the four
     # required fields (see _check_and_show_first_time_guide). Existing users upgrading
     # never get the flag set, so the guide never appears for them.
-    is_first_launch = not os.path.exists("localconfig")
+    is_first_launch = not localconfig.exists()
 
     # Auto-update for the packaged Windows .exe. If an update is available a temporary updater
     # copy of this exe spawns, this process exits, and the updater replaces the original and

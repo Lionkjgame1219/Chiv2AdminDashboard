@@ -3,14 +3,13 @@ from discord import SyncWebhook, Embed
 import datetime
 import os
 from PyQt5.QtWidgets import QInputDialog, QMessageBox, QApplication
+from . import localconfig
 
 webhook_primary = None
 webhook_secondary = None
 
 def load_config_from_file():
     """Load configuration from localconfig file"""
-    localconfig = "localconfig"
-
     config = {
         'primary_url': None,
         'secondary_url': None,
@@ -18,21 +17,18 @@ def load_config_from_file():
         'file_exists': False
     }
 
-    if os.path.exists(localconfig):
+    if localconfig.exists():
         config['file_exists'] = True
-        try:
-            with open(localconfig, 'r', encoding='utf-8') as f:
-                lines = f.read().strip().split('\n')
-                if len(lines) >= 1 and lines[0] != "None":
-                    if lines[0].startswith("https://discord.com/api/webhooks/"):
-                        config['primary_url'] = lines[0]
-                if len(lines) >= 2 and lines[1] != "None":
-                    if lines[1].startswith("https://discord.com/api/webhooks/"):
-                        config['secondary_url'] = lines[1]
-                if len(lines) >= 3 and lines[2] != "None":
-                    config['discord_user_id'] = lines[2]
-        except Exception:
-            pass
+        settings = localconfig.load_all()
+        primary = settings.get('primary_webhook', '')
+        secondary = settings.get('secondary_webhook', '')
+        user_id = settings.get('discord_user_id', '')
+        if primary.startswith(localconfig.DISCORD_WEBHOOK_PREFIX):
+            config['primary_url'] = primary
+        if secondary.startswith(localconfig.DISCORD_WEBHOOK_PREFIX):
+            config['secondary_url'] = secondary
+        if user_id and user_id != "None":
+            config['discord_user_id'] = user_id
 
     return config
 
@@ -194,28 +190,23 @@ def save_initial_config(primary_url, secondary_url, discord_user_id,
     """Save initial configuration to localconfig file.
 
     bot_token / bot_channel_id are written verbatim:
-      ""     -> never asked (blank line preserved for later prompts)
+      ""     -> never asked (left empty for later prompts)
       "None" -> asked and skipped
       other  -> configured
     """
-    localconfig = "localconfig"
-    try:
-        with open(localconfig, 'w', encoding='utf-8') as f:
-            f.write(f"{primary_url if primary_url else 'None'}\n")         # 0
-            f.write(f"{secondary_url if secondary_url else 'None'}\n")     # 1
-            f.write(f"{discord_user_id if discord_user_id else 'None'}\n") # 2
-            for _ in range(10):                                            # 3-12 presets
-                f.write("\n")
-            f.write("dark\n")                                              # 13 theme
-            for _ in range(13):                                            # 14-26
-                f.write("\n")
-            f.write(f"{bot_token}\n")                                      # 27
-            f.write(f"{bot_channel_id}\n")                                 # 28
-    except Exception as e:
+    saved = localconfig.write_all({
+        'primary_webhook':    primary_url if primary_url else 'None',
+        'secondary_webhook':  secondary_url if secondary_url else 'None',
+        'discord_user_id':    discord_user_id if discord_user_id else 'None',
+        'theme':              'dark',
+        'discord_bot_token':  bot_token,
+        'discord_channel_id': bot_channel_id,
+    })
+    if not saved:
         QMessageBox.warning(
             None,
             "Save Error",
-            f"Unable to save initial configuration:\n{str(e)}"
+            "Unable to save initial configuration to localconfig."
         )
 
     return primary_url, secondary_url
