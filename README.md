@@ -6,7 +6,7 @@
 
 **This section is only of interest if you plan to work with the source files directly. If you plan to use the compiled version from the [releases page](https://github.com/Lionkjgame1219/ModerationOVALOGICIEL/releases), you can skip this part.**
 
-Make sure to have all of the required Python libraries for the GUI (no OCR needed):
+Make sure to have all of the required Python libraries for the GUI:
 ```
 pip install PyQt5
 pip install pyperclip
